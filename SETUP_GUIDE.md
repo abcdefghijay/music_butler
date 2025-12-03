@@ -16,9 +16,10 @@ This guide walks you through building Music Butler from scratch, starting with z
 - [Part 6: Spotify API Setup](#part-6-set-up-spotify-api)
 - [Part 7: Install Music Butler](#part-7-install-music-butler)
 - [Part 8: Testing](#part-8-first-run-and-test)
-- [Part 9: Printer Setup (Optional)](#part-9-add-the-printer-optional)
-- [Part 10: Creating QR Codes](#part-10-creating-qr-codes)
-- [Part 11: Usage](#part-11-usage-guide)
+- [Part 9: Rotary Encoder Setup (Optional)](#part-9-add-the-rotary-encoder-optional)
+- [Part 10: Printer Setup (Optional)](#part-10-add-the-printer-optional)
+- [Part 11: Creating QR Codes](#part-11-creating-qr-codes)
+- [Part 12: Usage](#part-12-usage-guide)
 
 ---
 
@@ -35,10 +36,13 @@ This guide walks you through building Music Butler from scratch, starting with z
 | USB-C Power Supply (5V 3A) | $8 | Amazon, Adafruit | Official Pi adapter recommended |
 | 2x 4Ω 3W Speakers | $12 | Amazon, Parts Express | 2-3 inch diameter |
 | Speaker Wire (22-18 AWG) | $7 | Amazon, Home Depot | 10-20 feet |
+| Adafruit I2C QT Rotary Encoder Breakout | $10 | Adafruit (#4991) | Optional, recommended for volume/playback control |
+| STEMMA QT Cable (50-200mm) | $1-2 | Adafruit (#4210-4212) | For rotary encoder connection |
+| Rotary Encoder Knob | $3 | Adafruit (#5527) | Optional, for better grip |
 | Phomemo M02 Printer | $45 | Amazon | Optional, for printing stickers |
 | Thermal Sticker Paper (53mm) | $12 | Amazon | Comes with printer, extras available |
 
-**Total Cost:** ~$140 (without printer) or ~$185 (with printer)
+**Total Cost:** ~$140 (basic) or ~$155 (with rotary encoder) or ~$200 (with encoder + printer)
 
 ### Tools Needed
 
@@ -300,8 +304,29 @@ sudo apt-get install -y python3-pip python3-opencv libzbar0 python3-numpy \
 
 # Python libraries
 pip3 install --break-system-packages spotipy opencv-python pyzbar pillow \
-  qrcode python-escpos
+  qrcode python-escpos adafruit-circuitpython-seesaw
 ```
+
+### Enable I2C (for Rotary Encoder)
+
+If you plan to use the rotary encoder:
+
+```bash
+sudo raspi-config
+```
+
+1. Navigate to **Interface Options**
+2. Select **I2C**
+3. Select **Yes** to enable
+4. Select **Finish** and reboot if prompted
+
+**Verify I2C is enabled:**
+
+```bash
+lsmod | grep i2c
+```
+
+You should see `i2c_dev` and `i2c_bcm2835` listed.
 
 ### Install Raspotify
 
@@ -514,13 +539,102 @@ A window opens showing the camera view!
 2. **Music should start playing!** 🎵
 
 **Try controls:**
-- `+` = Increase volume
-- `-` = Decrease volume
+- Rotate knob (if encoder connected) = Adjust volume
+- Single press knob = Play/Pause
+- `+` = Increase volume (keyboard)
+- `-` = Decrease volume (keyboard)
 - `q` = Quit
 
 ---
 
-## Part 9: Add the Printer (Optional)
+## Part 9: Add the Rotary Encoder (Optional)
+
+**Time: 10 minutes**
+
+Skip if you don't have the Adafruit I2C QT Rotary Encoder Breakout.
+
+### What the Rotary Encoder Does
+
+The rotary encoder adds physical controls:
+- **Rotate knob** → Adjust volume
+- **Single press** → Play/Pause music
+- **Double press** → Print sticker for currently playing playlist
+
+### Connect the Rotary Encoder
+
+1. **Locate I2C pins on Raspberry Pi:**
+   - **SDA** (GPIO 2) - Data line
+   - **SCL** (GPIO 3) - Clock line
+   - **3.3V** - Power
+   - **GND** - Ground
+
+2. **Connect STEMMA QT cable:**
+   - One end plugs into the rotary encoder breakout board
+   - The other end connects to the Pi's I2C pins:
+     ```
+     Red wire (VIN) → 3.3V (Pin 1)
+     Black wire (GND) → GND (Pin 6)
+     White wire (SDA) → GPIO 2 / SDA (Pin 3)
+     Green wire (SCL) → GPIO 3 / SCL (Pin 5)
+     ```
+
+   **Alternative:** If you don't have a STEMMA QT cable, you can use jumper wires:
+   ```
+   VIN → 3.3V (Pin 1)
+   GND → GND (Pin 6)
+   SDA → GPIO 2 / SDA (Pin 3)
+   SCL → GPIO 3 / SCL (Pin 5)
+   ```
+
+3. **Attach knob** (optional but recommended):
+   - Screw the knob onto the encoder shaft
+   - Use the set screw to secure it
+
+### Verify Connection
+
+```bash
+# Check if I2C device is detected
+sudo i2cdetect -y 1
+```
+
+You should see `36` in the output (the rotary encoder's I2C address).
+
+**If you see `UU` instead of `36`:**
+- The device is detected but may be in use
+- This is okay - Music Butler will handle it
+
+**If you see nothing:**
+- Check cable connections
+- Verify I2C is enabled (`sudo raspi-config`)
+- Try a different STEMMA QT cable
+
+### Test the Rotary Encoder
+
+```bash
+cd ~/music-butler
+python3 music_butler.py
+```
+
+When Music Butler starts, you should see:
+```
+✓ Rotary encoder connected
+✓ Rotary encoder monitoring started
+```
+
+**Try the controls:**
+- Rotate the knob → Volume should change
+- Single press → Music should play/pause
+- Double press (quickly) → Should print sticker for current playlist
+
+**If the encoder doesn't work:**
+- Check that I2C is enabled
+- Verify cable connections
+- Make sure `adafruit-circuitpython-seesaw` is installed
+- Check the I2C address (should be 0x36)
+
+---
+
+## Part 10: Add the Printer (Optional)
 
 **Time: 15 minutes**
 
@@ -603,7 +717,7 @@ python3 ~/music-butler/music_butler.py
 
 ---
 
-## Part 10: Creating QR Codes
+## Part 11: Creating QR Codes
 
 ### Get Spotify URIs
 
@@ -671,7 +785,7 @@ python3 create_qr_codes.py
 
 ---
 
-## Part 11: Usage Guide
+## Part 12: Usage Guide
 
 ### Starting Music Butler
 
@@ -687,13 +801,22 @@ sudo reboot
 
 Waits 30 seconds, then starts automatically.
 
+### Rotary Encoder Controls (if connected)
+
+| Action | Function |
+|--------|----------|
+| **Rotate knob** | Adjust volume up/down |
+| **Single press** | Play/Pause current playback |
+| **Double press** | Print sticker for currently playing playlist/album |
+
 ### Keyboard Controls
 
 | Key | Function |
 |-----|----------|
 | `p` | Toggle Play/Print mode |
 | `+` or `=` | Increase volume |
-| `-` | Decrease volume |
+| `-` or `_` | Decrease volume |
+| `Space` | Play/Pause (alternative to rotary encoder) |
 | `q` | Quit |
 
 ### Modes
@@ -705,6 +828,11 @@ Waits 30 seconds, then starts automatically.
 **Print Mode (Orange):**
 - Press `p` to switch
 - Scan QR code → Prints sticker
+
+**Printing Current Playlist:**
+- Play a playlist or album (via QR code)
+- Double-press the rotary encoder knob
+- A sticker will be printed for the currently playing content
 
 ### Best Practices
 

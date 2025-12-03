@@ -8,7 +8,8 @@ A Raspberry Pi-based music player that scans QR codes to play Spotify playlists,
 - 🎵 Plays Spotify content (playlists, albums, tracks)
 - 🖨️ Prints custom QR code stickers on thermal printer
 - 🔊 High-quality audio via I2S DAC
-- ⌨️ Simple keyboard controls
+- 🎛️ Rotary encoder controls (volume, play/pause, print current playlist)
+- ⌨️ Keyboard controls (backup/alternative)
 - 🚀 Auto-starts on boot
 
 ## Hardware Requirements
@@ -17,6 +18,9 @@ A Raspberry Pi-based music player that scans QR codes to play Spotify playlists,
 - Raspberry Pi Camera Module V2
 - Adafruit I2S 3W Stereo Speaker Bonnet
 - 2x 4Ω 3W speakers
+- Adafruit I2C QT Rotary Encoder Breakout with NeoPixel (optional, recommended)
+- STEMMA QT / Qwiic JST SH 4-Pin Cable (for rotary encoder)
+- Knob for rotary encoder (optional)
 - Phomemo M02 thermal sticker printer (optional)
 - MicroSD card (32GB+)
 - USB-C power supply (5V 3A)
@@ -33,6 +37,7 @@ A Raspberry Pi-based music player that scans QR codes to play Spotify playlists,
   - pillow
   - qrcode
   - python-escpos
+  - adafruit-circuitpython-seesaw (for rotary encoder)
 
 ## Setup
 
@@ -49,7 +54,14 @@ dtoverlay=i2s-mmap
 ```bash
 sudo apt-get update
 sudo apt-get install -y python3-pip python3-opencv libzbar0 python3-numpy libusb-1.0-0-dev python3-pil
-pip3 install --break-system-packages spotipy opencv-python pyzbar pillow qrcode python-escpos
+pip3 install --break-system-packages spotipy opencv-python pyzbar pillow qrcode python-escpos adafruit-circuitpython-seesaw
+```
+
+### 2a. Enable I2C (for Rotary Encoder)
+```bash
+sudo raspi-config
+# Navigate to: Interface Options → I2C → Enable
+# Reboot if prompted
 ```
 
 ### 3. Install Raspotify
@@ -87,11 +99,18 @@ cd ~/music-butler
 python3 music_butler.py
 ```
 
+### Rotary Encoder Controls (if connected)
+
+- **Rotate knob** - Adjust volume up/down
+- **Single press** - Play/Pause current playback
+- **Double press** - Print sticker for currently playing playlist/album
+
 ### Keyboard Controls
 
 - `p` - Toggle between Play and Print modes
-- `+` - Increase volume
-- `-` - Decrease volume
+- `+` or `=` - Increase volume
+- `-` or `_` - Decrease volume
+- `Space` - Play/Pause (alternative to rotary encoder)
 - `q` - Quit
 
 ### Creating QR Codes
@@ -109,6 +128,13 @@ Scan QR codes to play music instantly!
 ### Print Mode
 
 Press `p` to enter Print mode, then scan QR codes to print stickers.
+
+### Printing Current Playlist
+
+If you have a rotary encoder connected:
+1. Play a playlist or album (via QR code scan)
+2. Double-press the rotary encoder knob
+3. A sticker will be printed for the currently playing playlist/album
 
 ## Troubleshooting
 
@@ -173,4 +199,5 @@ Special thanks to:
 
 ## Version History
 
+- v1.1 (2025) - Added rotary encoder support with volume control, play/pause, and print current playlist
 - v1.0 (2025) - Initial release

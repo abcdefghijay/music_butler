@@ -4,7 +4,7 @@ Music Butler - Spotify QR Code Player with Sticker Printer
 A Raspberry Pi-based music player that scans QR codes to play Spotify content
 and prints custom QR code stickers.
 
-Version: 1.0
+Version: 1.1
 License: MIT
 """
 
@@ -18,6 +18,7 @@ import subprocess
 import sys
 import qrcode
 from PIL import Image, ImageDraw, ImageFont
+import threading
 
 # Try to import printer library (optional)
 try:
@@ -26,6 +27,19 @@ try:
 except ImportError:
     ESCPOS_AVAILABLE = False
     print("⚠ python-escpos not installed. Printing will be disabled.")
+
+# Try to import rotary encoder library (optional)
+try:
+    from adafruit_seesaw.seesaw import Seesaw
+    from adafruit_seesaw.rotaryio import IncrementalEncoder
+    from adafruit_seesaw.digitalio import DigitalIO
+    import board
+    import busio
+    ROTARY_ENCODER_AVAILABLE = True
+except ImportError:
+    ROTARY_ENCODER_AVAILABLE = False
+    print("⚠ Adafruit seesaw library not installed. Rotary encoder will be disabled.")
+    print("  Install with: pip3 install --break-system-packages adafruit-circuitpython-seesaw")
 
 # =============================================================================
 # CONFIGURATION - EDIT THESE VALUES
@@ -54,6 +68,11 @@ DEFAULT_VOLUME = 70  # Initial volume (0-100)
 # Camera settings
 CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
+
+# Rotary encoder settings
+ROTARY_ENCODER_ENABLED = True  # Set to False to disable rotary encoder
+DOUBLE_PRESS_TIMEOUT = 0.5  # Seconds to detect double press
+VOLUME_STEP = 2  # Volume change per encoder step (1-5 recommended)
 
 # =============================================================================
 # STICKER PRINTER CLASS
@@ -190,6 +209,131 @@ class StickerPrinter:
             return False
 
 # =============================================================================
+# ROTARY ENCODER HANDLER CLASS
+# =============================================================================
+
+class RotaryEncoderHandler:
+    """Handles rotary encoder input in a separate thread"""
+    
+    def __init__(self, callback_volume, callback_single_press, callback_double_press):
+        self.enabled = False
+        self.encoder = None
+        self.button = None
+        self.i2c = None
+        self.seesaw = None
+        self.running = False
+        self.thread = None
+        
+        self.callback_volume = callback_volume
+        self.callback_single_press = callback_single_press
+        self.callback_double_press = callback_double_press
+        
+        self.last_position = None
+        self.last_button_state = False
+        self.last_press_time = 0
+        
+        if not ROTARY_ENCODER_AVAILABLE:
+            print("⚠ Rotary encoder library not available")
+            return
+        
+        if not ROTARY_ENCODER_ENABLED:
+            print("⚠ Rotary encoder disabled in configuration")
+            return
+        
+        try:
+            # Initialize I2C
+            try:
+                self.i2c = busio.I2C(board.SCL, board.SDA)
+            except (ValueError, AttributeError) as e:
+                raise Exception(f"I2C pins not available: {e}. Make sure I2C is enabled.")
+            
+            self.seesaw = Seesaw(self.i2c, addr=0x36)
+            
+            # Initialize encoder
+            self.encoder = IncrementalEncoder(self.seesaw)
+            self.last_position = self.encoder.position
+            
+            # Initialize button
+            self.button = DigitalIO(self.seesaw, 24)
+            self.button.direction = DigitalIO.INPUT
+            self.button.pull = DigitalIO.PULL_UP
+            
+            self.enabled = True
+            print("✓ Rotary encoder connected")
+        except Exception as e:
+            print(f"⚠ Rotary encoder not available: {e}")
+            print("  Rotary encoder disabled - keyboard controls will still work")
+            print("  To enable: Install adafruit-circuitpython-seesaw and enable I2C")
+    
+    def start(self):
+        """Start the encoder monitoring thread"""
+        if not self.enabled:
+            return
+        
+        self.running = True
+        self.thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self.thread.start()
+        print("✓ Rotary encoder monitoring started")
+    
+    def stop(self):
+        """Stop the encoder monitoring thread"""
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=1.0)
+    
+    def _monitor_loop(self):
+        """Main monitoring loop (runs in thread)"""
+        while self.running:
+            try:
+                # Check encoder position
+                current_position = self.encoder.position
+                if self.last_position is not None:
+                    position_change = current_position - self.last_position
+                    if position_change != 0:
+                        # Volume control
+                        if self.callback_volume:
+                            self.callback_volume(position_change)
+                        self.last_position = current_position
+                else:
+                    self.last_position = current_position
+                
+                # Check button state
+                button_pressed = not self.button.value  # Inverted because of pull-up
+                current_time = time.time()
+                
+                if button_pressed and not self.last_button_state:
+                    # Button just pressed
+                    time_since_last = current_time - self.last_press_time
+                    
+                    if time_since_last < DOUBLE_PRESS_TIMEOUT:
+                        # Double press detected
+                        if self.callback_double_press:
+                            self.callback_double_press()
+                        self.last_press_time = 0  # Reset to prevent triple-press
+                    else:
+                        # Single press - wait to see if it becomes double
+                        self.last_press_time = current_time
+                
+                elif not button_pressed and self.last_button_state:
+                    # Button just released
+                    time_since_press = current_time - self.last_press_time
+                    
+                    if (time_since_press >= DOUBLE_PRESS_TIMEOUT and 
+                        self.last_press_time > 0):
+                        # Single press confirmed (no second press)
+                        if self.callback_single_press:
+                            self.callback_single_press()
+                        self.last_press_time = 0
+                
+                self.last_button_state = button_pressed
+                
+                time.sleep(0.01)  # Small delay to prevent CPU spinning
+                
+            except Exception as e:
+                print(f"⚠ Rotary encoder error: {e}")
+                time.sleep(0.1)
+
+# =============================================================================
 # MUSIC BUTLER CLASS
 # =============================================================================
 
@@ -257,8 +401,23 @@ class MusicButler:
         self.scan_cooldown = SCAN_COOLDOWN
         self.print_mode = False
         
+        # Playback state tracking
+        self.current_volume = DEFAULT_VOLUME
+        self.current_playback_context = None  # URI of currently playing content
+        self.is_playing = False
+        
         # Set initial volume
         self.set_volume(DEFAULT_VOLUME)
+        
+        # Initialize rotary encoder
+        self.rotary_encoder = RotaryEncoderHandler(
+            callback_volume=self._on_encoder_rotate,
+            callback_single_press=self._on_button_single_press,
+            callback_double_press=self._on_button_double_press
+        )
+        
+        if self.rotary_encoder.enabled:
+            self.rotary_encoder.start()
         
         print("\n✓ Music Butler is ready to serve!")
     
@@ -266,6 +425,7 @@ class MusicButler:
         """Set system volume (0-100)"""
         try:
             volume_percent = max(0, min(100, volume_percent))
+            self.current_volume = volume_percent
             subprocess.run(
                 ['amixer', 'set', 'Master', f'{volume_percent}%'],
                 capture_output=True,
@@ -273,6 +433,22 @@ class MusicButler:
             )
         except Exception as e:
             pass  # Ignore volume errors
+    
+    def _on_encoder_rotate(self, position_change):
+        """Callback for rotary encoder rotation"""
+        volume_change = position_change * VOLUME_STEP
+        new_volume = max(0, min(100, self.current_volume - volume_change))
+        if new_volume != self.current_volume:
+            self.set_volume(new_volume)
+            print(f"🔊 Volume: {self.current_volume}%")
+    
+    def _on_button_single_press(self):
+        """Callback for single button press - play/pause"""
+        self.toggle_playback()
+    
+    def _on_button_double_press(self):
+        """Callback for double button press - print current playlist"""
+        self.print_current_playlist()
     
     def get_active_device(self):
         """Get the active Spotify device ID"""
@@ -364,11 +540,100 @@ class MusicButler:
             else:
                 self.sp.start_playback(device_id=device_id, context_uri=spotify_uri)
             
+            # Track current playback context
+            self.current_playback_context = spotify_uri
+            self.is_playing = True
+            
             print(f"♪ Now playing: {info['display']}")
             return True
             
         except Exception as e:
             print(f"✗ Error playing content: {e}")
+            return False
+    
+    def get_current_playback(self):
+        """
+        Get information about currently playing content
+        
+        Returns:
+            dict: Playback information or None if not playing
+        """
+        try:
+            playback = self.sp.current_playback()
+            if playback and playback.get('is_playing'):
+                context = playback.get('context')
+                if context:
+                    return {
+                        'uri': context.get('uri'),
+                        'type': context.get('type'),
+                        'is_playing': True
+                    }
+            return None
+        except Exception as e:
+            print(f"⚠ Error getting current playback: {e}")
+            return None
+    
+    def toggle_playback(self):
+        """Toggle play/pause for current playback"""
+        try:
+            device_id = self.get_active_device()
+            if not device_id:
+                print("✗ No active Spotify device found!")
+                return False
+            
+            playback = self.sp.current_playback()
+            
+            if playback and playback.get('is_playing'):
+                # Pause
+                self.sp.pause_playback(device_id=device_id)
+                self.is_playing = False
+                print("⏸ Paused")
+            else:
+                # Resume or start
+                if playback and playback.get('item'):
+                    # Resume existing playback
+                    self.sp.start_playback(device_id=device_id)
+                    self.is_playing = True
+                    print("▶️ Resumed")
+                else:
+                    # Nothing to resume - try to use last context
+                    if self.current_playback_context:
+                        self.play_content(self.current_playback_context)
+                    else:
+                        print("✗ No content to play")
+                        return False
+            
+            return True
+            
+        except Exception as e:
+            print(f"✗ Error toggling playback: {e}")
+            return False
+    
+    def print_current_playlist(self):
+        """Print a sticker for the currently playing playlist/album"""
+        try:
+            # First try to get from current playback
+            playback_info = self.get_current_playback()
+            
+            if playback_info and playback_info.get('uri'):
+                uri = playback_info['uri']
+                # Only print if it's a playlist or album (not a track)
+                if uri.startswith(('spotify:playlist:', 'spotify:album:')):
+                    print("🖨 Printing sticker for current playlist/album...")
+                    return self.print_sticker(uri)
+            
+            # Fall back to last played context
+            if self.current_playback_context:
+                if self.current_playback_context.startswith(('spotify:playlist:', 'spotify:album:')):
+                    print("🖨 Printing sticker for last played playlist/album...")
+                    return self.print_sticker(self.current_playback_context)
+            
+            print("✗ No playlist or album currently playing")
+            print("  Play a playlist or album first, then double-press the knob")
+            return False
+            
+        except Exception as e:
+            print(f"✗ Error printing current playlist: {e}")
             return False
     
     def print_sticker(self, spotify_uri):
@@ -433,6 +698,13 @@ class MusicButler:
         print("\n📷 CAMERA MODES:")
         print("  • PLAY MODE (default): Scan QR code to play music")
         print("  • PRINT MODE: Scan QR code to print a sticker")
+        print("\n🎛️  ROTARY ENCODER CONTROLS:")
+        if self.rotary_encoder.enabled:
+            print("  • Rotate knob - Adjust volume")
+            print("  • Single press - Play/Pause")
+            print("  • Double press - Print sticker for current playlist")
+        else:
+            print("  (Rotary encoder not connected)")
         print("\n⌨️  KEYBOARD CONTROLS:")
         print("  • 'p' - Toggle between Play/Print mode")
         print("  • '+' - Increase volume")
@@ -444,8 +716,6 @@ class MusicButler:
             print("\n⚠ NOTE: Printer not available - only Play mode will work")
         
         print("\nStarting camera...\n")
-        
-        current_volume = DEFAULT_VOLUME
         
         try:
             while True:
@@ -492,10 +762,21 @@ class MusicButler:
                 
                 cv2.putText(frame, mode_text, (10, 30),
                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, mode_color, 2)
-                cv2.putText(frame, f"Volume: {current_volume}%", (10, 60),
+                cv2.putText(frame, f"Volume: {self.current_volume}%", (10, 60),
                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-                cv2.putText(frame, "Press 'p' to switch | 'q' to quit", (10, 90),
+                
+                # Show playback status
+                playback_status = "▶️ Playing" if self.is_playing else "⏸ Paused"
+                cv2.putText(frame, playback_status, (10, 90),
                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+                
+                # Show controls
+                if self.rotary_encoder.enabled:
+                    control_text = "Knob: Vol | 1x=Play/Pause | 2x=Print | 'q'=Quit"
+                else:
+                    control_text = "Press 'p' to switch | 'q' to quit"
+                cv2.putText(frame, control_text, (10, 115),
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1)
                 
                 # Display frame
                 cv2.imshow('Music Butler', frame)
@@ -516,14 +797,17 @@ class MusicButler:
                         print(f"\n→ Switched to {mode} mode")
                         
                 elif key == ord('+') or key == ord('='):
-                    current_volume = min(100, current_volume + 5)
-                    self.set_volume(current_volume)
-                    print(f"🔊 Volume: {current_volume}%")
+                    self.current_volume = min(100, self.current_volume + 5)
+                    self.set_volume(self.current_volume)
+                    print(f"🔊 Volume: {self.current_volume}%")
                     
                 elif key == ord('-') or key == ord('_'):
-                    current_volume = max(0, current_volume - 5)
-                    self.set_volume(current_volume)
-                    print(f"🔉 Volume: {current_volume}%")
+                    self.current_volume = max(0, self.current_volume - 5)
+                    self.set_volume(self.current_volume)
+                    print(f"🔉 Volume: {self.current_volume}%")
+                
+                elif key == ord(' '):  # Spacebar for play/pause
+                    self.toggle_playback()
                     
         except KeyboardInterrupt:
             print("\n\n⚠ Interrupted by user")
@@ -531,6 +815,8 @@ class MusicButler:
         finally:
             # Cleanup
             print("Cleaning up...")
+            if self.rotary_encoder.enabled:
+                self.rotary_encoder.stop()
             self.camera.release()
             cv2.destroyAllWindows()
             print("✓ Thank you for using Music Butler!\n")
