@@ -1,0 +1,17 @@
+## Summary of All Files
+
+~/music-butler/
+├── music_butler.py              # Main application ✓
+├── README.md                    # Documentation ✓
+├── create_qr_codes.py          # QR generator utility ✓
+├── install.sh                   # Quick installer ✓
+└── .spotify_cache              # (Created automatically)
+
+~/
+└── start-music-butler.sh       # Startup script ✓
+
+~/.config/autostart/
+└── music-butler.desktop        # Autostart entry ✓
+
+/etc/systemd/system/
+└── music-butler.service        # System service (optional) ✓

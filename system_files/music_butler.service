@@ -1,0 +1,17 @@
+[Unit]
+Description=Music Butler - Spotify QR Player
+After=network.target sound.target raspotify.service
+Wants=raspotify.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/music-butler
+Environment="DISPLAY=:0"
+Environment="XAUTHORITY=/home/pi/.Xauthority"
+ExecStart=/usr/bin/python3 /home/pi/music-butler/music_butler.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=graphical.target

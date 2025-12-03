@@ -1,0 +1,10 @@
+# This file goes here: ~/.config/autostart/music-butler.desktop
+
+[Desktop Entry]
+Type=Application
+Name=Music Butler
+Comment=Spotify QR Code Player with Printer
+Exec=/home/pi/start-music-butler.sh
+Hidden=false
+NoDisplay=false
+X-GNOME-Autostart-enabled=true
