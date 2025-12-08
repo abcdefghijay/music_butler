@@ -16,6 +16,7 @@ import time
 import numpy as np
 import subprocess
 import sys
+import os
 import qrcode
 from PIL import Image, ImageDraw, ImageFont
 import threading
@@ -484,6 +485,31 @@ class MusicButler:
         self.scan_cooldown = SCAN_COOLDOWN
         self.print_mode = False
         
+        # Check if display is available (for showing camera preview)
+        self.display_available = False
+        try:
+            # Check if DISPLAY environment variable is set (X11)
+            if 'DISPLAY' in os.environ:
+                # Try to create a test window to see if display works
+                test_img = np.zeros((100, 100, 3), dtype=np.uint8)
+                cv2.namedWindow('__test__', cv2.WINDOW_NORMAL)
+                cv2.imshow('__test__', test_img)
+                cv2.waitKey(1)
+                cv2.destroyWindow('__test__')
+                self.display_available = True
+            # Check if framebuffer exists (for direct framebuffer access)
+            elif os.path.exists('/dev/fb0'):
+                # Framebuffer available, but OpenCV might not work without X11
+                # We'll try anyway, but it may fail
+                self.display_available = False  # Conservative: assume no display
+        except Exception:
+            self.display_available = False
+        
+        if not self.display_available:
+            print("⚠ Display not available - running in headless mode")
+            print("  Camera will work, but no preview window will be shown")
+            print("  Use keyboard controls: 'q' to quit, '+'/'-' for volume")
+        
         # Playback state tracking
         self.current_volume = DEFAULT_VOLUME
         self.current_playback_context = None  # URI of currently playing content
@@ -871,11 +897,17 @@ class MusicButler:
                 cv2.putText(frame, control_text, (10, 115),
                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1)
                 
-                # Display frame
-                cv2.imshow('Music Butler', frame)
-                
-                # Handle keyboard input
-                key = cv2.waitKey(1) & 0xFF
+                # Display frame (if display is available)
+                if self.display_available:
+                    cv2.imshow('Music Butler', frame)
+                    # Handle keyboard input from window
+                    key = cv2.waitKey(1) & 0xFF
+                else:
+                    # Headless mode - no display, just process frames
+                    # Note: Keyboard input won't work in headless mode
+                    # User would need to use Ctrl+C to quit
+                    key = 0
+                    time.sleep(0.033)  # ~30 fps
                 
                 if key == ord('q'):
                     print("\n👋 Music Butler signing off...")
@@ -920,7 +952,8 @@ class MusicButler:
                         pass
                 else:  # OpenCV
                     self.camera.release()
-            cv2.destroyAllWindows()
+            if self.display_available:
+                cv2.destroyAllWindows()
             print("✓ Thank you for using Music Butler!\n")
 
 # =============================================================================
