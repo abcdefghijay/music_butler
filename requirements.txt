@@ -1,0 +1,14 @@
+# Music Butler - Python Dependencies
+# Install with: pip3 install --break-system-packages -r requirements.txt
+
+# Core dependencies (required)
+spotipy>=2.23.0
+opencv-python>=4.8.0
+pyzbar>=0.1.9
+numpy>=1.24.0
+pillow>=10.0.0
+qrcode>=7.4.2
+
+# Optional dependencies
+python-escpos>=3.0.0  # For printer support (Part 10)
+adafruit-circuitpython-seesaw>=1.14.0  # For rotary encoder support (Part 9)
