@@ -352,8 +352,10 @@ class RotaryEncoderHandler:
 class MusicButler:
     """Main application class for QR code scanning and playback"""
     
-    def __init__(self, force_display=False):
+    def __init__(self, force_display=False, verbose=False, debug_mode=False):
         self._force_display = force_display
+        self._verbose = verbose
+        self._debug_mode = debug_mode
         print("\n" + "="*60)
         print("  MUSIC BUTLER - Initialization")
         print("="*60)
@@ -953,23 +955,50 @@ class MusicButler:
                 mode_text = "MODE: PRINT STICKER" if self.print_mode else "MODE: PLAY MUSIC"
                 mode_color = (255, 165, 0) if self.print_mode else (0, 255, 0)
                 
-                cv2.putText(frame, mode_text, (10, 30),
+                y_offset = 30
+                cv2.putText(frame, mode_text, (10, y_offset),
                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, mode_color, 2)
-                cv2.putText(frame, f"Volume: {self.current_volume}%", (10, 60),
+                y_offset += 30
+                
+                cv2.putText(frame, f"Volume: {self.current_volume}%", (10, y_offset),
                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                y_offset += 25
                 
                 # Show playback status
                 playback_status = "▶️ Playing" if self.is_playing else "⏸ Paused"
-                cv2.putText(frame, playback_status, (10, 90),
+                cv2.putText(frame, playback_status, (10, y_offset),
                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+                y_offset += 25
+                
+                # Show QR detection status
+                if self.qr_detection_count > 0:
+                    detection_text = f"QR scans: {self.qr_detection_count}"
+                    cv2.putText(frame, detection_text, (10, y_offset),
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 255), 1)
+                    y_offset += 20
+                
+                # Show cooldown status
+                if self.last_scan_time > 0:
+                    time_since_scan = current_time - self.last_scan_time
+                    if time_since_scan < self.scan_cooldown:
+                        cooldown_remaining = self.scan_cooldown - time_since_scan
+                        cooldown_text = f"Cooldown: {cooldown_remaining:.1f}s"
+                        cv2.putText(frame, cooldown_text, (10, y_offset),
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 200, 0), 1)
+                        y_offset += 20
                 
                 # Show controls
                 if self.rotary_encoder.enabled:
                     control_text = "Knob: Vol | 1x=Play/Pause | 2x=Print | 'q'=Quit"
                 else:
                     control_text = "Press 'p' to switch | 'q' to quit"
-                cv2.putText(frame, control_text, (10, 115),
+                cv2.putText(frame, control_text, (10, frame.shape[0] - 20),
                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1)
+                
+                # Show debug mode indicator
+                if self.debug_mode:
+                    cv2.putText(frame, "DEBUG MODE", (frame.shape[1] - 150, 30),
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
                 
                 # Display frame (if display is available)
                 if self.display_available:
@@ -1052,6 +1081,9 @@ Examples:
 
   # Run in headless mode (no camera preview):
   python3 music_butler.py --no-display
+
+  # Run with verbose debugging:
+  python3 music_butler.py --verbose --debug
         """
     )
     parser.add_argument(
@@ -1063,6 +1095,17 @@ Examples:
         '--no-display',
         action='store_true',
         help='Run in headless mode (no camera preview window)'
+    )
+    parser.add_argument(
+        '--verbose', '-v',
+        action='store_true',
+        help='Verbose output (show all QR code detection attempts)'
+    )
+    parser.add_argument(
+        '--debug', '--debug-mode',
+        action='store_true',
+        dest='debug_mode',
+        help='Debug mode (show detailed QR code information and detection stats)'
     )
     args = parser.parse_args()
     
@@ -1082,10 +1125,18 @@ Examples:
     no_display = args.no_display
     
     try:
-        butler = MusicButler(force_display=force_display)
+        butler = MusicButler(
+            force_display=force_display,
+            verbose=args.verbose,
+            debug_mode=args.debug_mode
+        )
         if no_display:
             butler.display_available = False
             print("→ Running in headless mode (--no-display flag)")
+        if args.verbose:
+            print("→ Verbose mode enabled - showing all QR detection attempts")
+        if args.debug_mode:
+            print("→ Debug mode enabled - showing detailed QR code information")
         butler.run()
     except Exception as e:
         print(f"\n❌ Fatal error: {e}")
