@@ -20,6 +20,13 @@ import qrcode
 from PIL import Image, ImageDraw, ImageFont
 import threading
 
+# Try to import picamera2 (for direct libcamera access on Raspberry Pi)
+try:
+    from picamera2 import Picamera2
+    PICAMERA2_AVAILABLE = True
+except ImportError:
+    PICAMERA2_AVAILABLE = False
+
 # Try to import printer library (optional)
 try:
     from escpos.printer import Usb
@@ -379,67 +386,96 @@ class MusicButler:
             self.printer = StickerPrinter(0, 0)
         
         # Initialize camera
-        # Try multiple device indices (libcamera may use different device numbers)
+        # Prefer picamera2 (direct libcamera access) over OpenCV VideoCapture
         self.camera = None
+        self.camera_type = None  # 'picamera2' or 'opencv'
         camera_found = False
         
-        # First, check what video devices actually exist
-        import os
-        import glob
-        video_devices = []
-        for dev_path in glob.glob('/dev/video*'):
+        # Try picamera2 first (best option for Raspberry Pi with libcamera)
+        if PICAMERA2_AVAILABLE:
             try:
-                # Extract device number from path (e.g., /dev/video10 -> 10)
-                dev_num = int(dev_path.replace('/dev/video', ''))
-                video_devices.append(dev_num)
-            except ValueError:
-                continue
+                picam2 = Picamera2()
+                # Configure camera
+                config = picam2.create_preview_configuration(
+                    main={"size": (CAMERA_WIDTH, CAMERA_HEIGHT)}
+                )
+                picam2.configure(config)
+                picam2.start()
+                
+                # Test if we can read a frame
+                test_frame = picam2.capture_array()
+                if test_frame is not None and test_frame.size > 0:
+                    self.camera = picam2
+                    self.camera_type = 'picamera2'
+                    camera_found = True
+                    print("✓ Camera initialized using picamera2 (libcamera)")
+            except Exception as e:
+                print(f"⚠ picamera2 failed: {e}")
+                if PICAMERA2_AVAILABLE:
+                    try:
+                        if self.camera:
+                            self.camera.stop()
+                            self.camera.close()
+                    except:
+                        pass
         
-        # Try existing devices first, then fall back to range 0-20
-        devices_to_try = sorted(set(video_devices + list(range(21))))
-        
-        # Suppress OpenCV warnings temporarily
-        import warnings
-        import logging
-        logging.getLogger().setLevel(logging.ERROR)
-        
-        for device_index in devices_to_try:
-            try:
-                test_camera = cv2.VideoCapture(device_index)
-                if test_camera.isOpened():
-                    test_camera.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
-                    test_camera.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
-                    
-                    # Test if we can actually read from it
-                    ret, _ = test_camera.read()
-                    if ret:
-                        self.camera = test_camera
-                        camera_found = True
-                        print(f"✓ Camera initialized on device {device_index} ({'/dev/video' + str(device_index) if device_index in video_devices else 'index'})")
-                        break
+        # Fall back to OpenCV VideoCapture if picamera2 didn't work
+        if not camera_found:
+            # Try multiple device indices (libcamera may use different device numbers)
+            import os
+            import glob
+            video_devices = []
+            for dev_path in glob.glob('/dev/video*'):
+                try:
+                    # Extract device number from path (e.g., /dev/video10 -> 10)
+                    dev_num = int(dev_path.replace('/dev/video', ''))
+                    video_devices.append(dev_num)
+                except ValueError:
+                    continue
+            
+            # Try existing devices first, then fall back to range 0-20
+            devices_to_try = sorted(set(video_devices + list(range(21))))
+            
+            # Suppress OpenCV warnings temporarily
+            import warnings
+            import logging
+            logging.getLogger().setLevel(logging.ERROR)
+            
+            for device_index in devices_to_try:
+                try:
+                    test_camera = cv2.VideoCapture(device_index)
+                    if test_camera.isOpened():
+                        test_camera.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+                        test_camera.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+                        
+                        # Test if we can actually read from it
+                        ret, _ = test_camera.read()
+                        if ret:
+                            self.camera = test_camera
+                            self.camera_type = 'opencv'
+                            camera_found = True
+                            print(f"✓ Camera initialized on device {device_index} (OpenCV/V4L2)")
+                            break
+                        else:
+                            test_camera.release()
                     else:
                         test_camera.release()
-                else:
-                    test_camera.release()
-            except Exception:
-                continue
-        
-        # Restore logging
-        logging.getLogger().setLevel(logging.WARNING)
+                except Exception:
+                    continue
+            
+            # Restore logging
+            logging.getLogger().setLevel(logging.WARNING)
         
         if not camera_found:
             print("❌ Failed to initialize camera: Could not read from camera")
-            print(f"\nFound video devices: {sorted(video_devices) if video_devices else 'none'}")
+            if not PICAMERA2_AVAILABLE:
+                print("\n⚠ picamera2 is not installed. Install with:")
+                print("   pip3 install --break-system-packages picamera2")
             print("\nTroubleshooting:")
             print("- Check camera cable connection")
             print("- Verify camera is enabled in /boot/firmware/config.txt")
             print("- Try: vcgencmd get_camera")
-            print("- Try: ls -l /dev/video*")
             print("- Try: rpicam-still -o test.jpg (to verify camera works)")
-            print("- Note: If rpicam-still works, camera hardware is fine.")
-            print("  The issue is OpenCV accessing the camera. Try rebooting.")
-            print("\nAlternative: You may need to use libcamera-vid to create a V4L2 device:")
-            print("  libcamera-vid -t 0 --inline --listen -o tcp://0.0.0.0:8888")
             sys.exit(1)
         
         # Scanner state
@@ -766,9 +802,19 @@ class MusicButler:
         
         try:
             while True:
-                # Read camera frame
-                ret, frame = self.camera.read()
-                if not ret:
+                # Read camera frame (different API for picamera2 vs OpenCV)
+                if self.camera_type == 'picamera2':
+                    try:
+                        frame = self.camera.capture_array()
+                        ret = frame is not None and frame.size > 0
+                    except Exception as e:
+                        print(f"✗ Failed to read from camera: {e}")
+                        ret = False
+                        frame = None
+                else:  # OpenCV
+                    ret, frame = self.camera.read()
+                
+                if not ret or frame is None:
                     print("✗ Failed to read from camera")
                     time.sleep(0.1)
                     continue
@@ -864,7 +910,16 @@ class MusicButler:
             print("Cleaning up...")
             if self.rotary_encoder.enabled:
                 self.rotary_encoder.stop()
-            self.camera.release()
+            # Clean up camera (different methods for picamera2 vs OpenCV)
+            if self.camera:
+                if self.camera_type == 'picamera2':
+                    try:
+                        self.camera.stop()
+                        self.camera.close()
+                    except:
+                        pass
+                else:  # OpenCV
+                    self.camera.release()
             cv2.destroyAllWindows()
             print("✓ Thank you for using Music Butler!\n")
 

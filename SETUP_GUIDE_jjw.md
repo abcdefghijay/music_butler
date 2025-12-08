@@ -780,19 +780,128 @@ If this creates `test_image.jpg`, your camera hardware is working!
 
 **Step 6: If rpicam-still works but Music Butler still can't access camera**
 
-This means OpenCV can't find the camera device. Check available video devices:
+This means OpenCV can't access the camera through libcamera. Modern Raspberry Pi OS uses libcamera, which doesn't expose a standard V4L2 device that OpenCV can read.
+
+**Solution: Set up v4l2loopback to bridge libcamera and OpenCV**
+
+**Install v4l2loopback:**
+
+```bash
+sudo apt-get update
+sudo apt-get install -y v4l2loopback-dkms
+```
+
+**Load the module with parameters to create /dev/video20:**
+
+```bash
+sudo modprobe v4l2loopback video_nr=20 card_label="Music Butler Camera"
+```
+
+This creates `/dev/video20` specifically.
+
+**Verify the device was created:**
+
+```bash
+ls -l /dev/video20
+```
+
+You should see the device. Also check:
 
 ```bash
 ls -l /dev/video*
 ```
 
-You should see devices like `/dev/video0`, `/dev/video10`, etc. The updated Music Butler code will automatically try devices 0-9, so this should work. If it still doesn't, try rebooting:
+You should see `/dev/video20` in the list.
+
+**Start the camera stream to the loopback device:**
 
 ```bash
-sudo reboot
+rpicam-vid -t 0 --inline -o v4l2:///dev/video20 &
 ```
 
-After reboot, the camera should be accessible to OpenCV.
+This streams the camera to `/dev/video20`, which OpenCV can access.
+
+**Verify it's working:**
+
+```bash
+# Check if the process is running
+ps aux | grep rpicam-vid
+
+# Check if video20 is receiving data
+v4l2-ctl --device=/dev/video20 --info
+```
+
+If `v4l2-ctl` is not installed, you can skip that check - if the process is running, it should be working.
+
+**Now try running Music Butler:**
+
+```bash
+python3 music_butler.py
+```
+
+The camera should now be accessible!
+
+**Make it permanent (so it starts on boot):**
+
+**Option A: Create a modprobe config file (for v4l2loopback module):**
+
+```bash
+sudo nano /etc/modprobe.d/v4l2loopback.conf
+```
+
+Add this line:
+
+```
+options v4l2loopback video_nr=20 card_label="Music Butler Camera"
+```
+
+**Save:** `Ctrl+X` → `Y` → `Enter`
+
+**Add to /etc/modules:**
+
+```bash
+echo 'v4l2loopback' | sudo tee -a /etc/modules
+```
+
+**Option B: Create a systemd service for the camera stream:**
+
+```bash
+sudo nano /etc/systemd/system/camera-loopback.service
+```
+
+Paste:
+
+```ini
+[Unit]
+Description=Camera Loopback for Music Butler
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/rpicam-vid -t 0 --inline -o v4l2:///dev/video20
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**Save:** `Ctrl+X` → `Y` → `Enter`
+
+**Enable and start:**
+
+```bash
+sudo systemctl enable camera-loopback.service
+sudo systemctl start camera-loopback.service
+```
+
+**Verify it's running:**
+
+```bash
+sudo systemctl status camera-loopback.service
+```
+
+Now Music Butler should be able to access the camera on `/dev/video20`!
 
 ---
 
