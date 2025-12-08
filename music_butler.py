@@ -964,8 +964,8 @@ class MusicButler:
                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
                 y_offset += 25
                 
-                # Show playback status
-                playback_status = "▶️ Playing" if self.is_playing else "⏸ Paused"
+                # Show playback status (use ASCII instead of emojis for OpenCV compatibility)
+                playback_status = "[>] Playing" if self.is_playing else "[||] Paused"
                 cv2.putText(frame, playback_status, (10, y_offset),
                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
                 y_offset += 25
