@@ -376,23 +376,38 @@ class MusicButler:
             self.printer = StickerPrinter(0, 0)
         
         # Initialize camera
-        try:
-            self.camera = cv2.VideoCapture(0)
-            self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
-            self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
-            
-            # Test camera
-            ret, _ = self.camera.read()
-            if not ret:
-                raise Exception("Could not read from camera")
-            
-            print("✓ Camera initialized")
-        except Exception as e:
-            print(f"❌ Failed to initialize camera: {e}")
+        # Try multiple device indices (libcamera may use different device numbers)
+        self.camera = None
+        camera_found = False
+        
+        for device_index in range(10):  # Try devices 0-9
+            try:
+                test_camera = cv2.VideoCapture(device_index)
+                if test_camera.isOpened():
+                    test_camera.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+                    test_camera.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+                    
+                    # Test if we can actually read from it
+                    ret, _ = test_camera.read()
+                    if ret:
+                        self.camera = test_camera
+                        camera_found = True
+                        print(f"✓ Camera initialized on device {device_index}")
+                        break
+                    else:
+                        test_camera.release()
+            except Exception:
+                continue
+        
+        if not camera_found:
+            print("❌ Failed to initialize camera: Could not read from camera")
             print("\nTroubleshooting:")
             print("- Check camera cable connection")
             print("- Verify camera is enabled in /boot/firmware/config.txt")
             print("- Try: vcgencmd get_camera")
+            print("- Try: ls -l /dev/video*")
+            print("- Note: If rpicam-still works, camera hardware is fine.")
+            print("  The issue is OpenCV accessing the camera. Try rebooting.")
             sys.exit(1)
         
         # Scanner state

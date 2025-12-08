@@ -692,6 +692,98 @@ X-GNOME-Autostart-enabled=true
 
 **Time: 10 minutes**
 
+### Troubleshooting: Camera Error
+
+**If you see:** `❌ Failed to initialize camera: Could not read from camera`
+
+**Step 1: Check camera detection**
+
+```bash
+vcgencmd get_camera
+```
+
+**Expected output:**
+- `supported=1 detected=1` = Camera is working ✅
+- `supported=1 detected=0` = Camera enabled but not detected (cable issue)
+- `supported=0 detected=0` = Camera not enabled in config.txt OR using libcamera (modern OS)
+
+**Note:** If `rpicam-still -o test.jpg` works but `vcgencmd get_camera` shows `supported=0 detected=0`, you're using libcamera (modern Raspberry Pi OS). This is fine - the camera hardware is working. OpenCV will automatically try different device indices to find the camera.
+
+**Step 2: If camera is not detected, verify config.txt settings**
+
+```bash
+sudo nano /boot/firmware/config.txt
+```
+
+**Make sure these lines are at the bottom of the file:**
+
+```ini
+# Enable camera (legacy mode for better compatibility)
+camera_auto_detect=0
+start_x=1
+gpu_mem=128
+```
+
+**Save:** `Ctrl+X` → `Y` → `Enter`
+
+**Step 3: If config.txt is correct but camera still not detected**
+
+**Check camera cable connection (MOST COMMON ISSUE):**
+
+1. Power off: `sudo shutdown -h now`
+2. Wait 10 seconds, then unplug power
+3. **Check the camera ribbon cable:**
+   - Blue side should face USB ports
+   - Metal contacts should face HDMI ports
+   - Cable should be fully inserted (push firmly)
+   - Black clip should be locked down (push down until it clicks)
+4. **Remove and reinsert the cable:**
+   - Pull up the black clip (~2mm)
+   - Remove the cable completely
+   - Reinsert with correct orientation
+   - Lock the clip down
+5. Gently tug cable to verify it's secure
+6. Reconnect power and boot
+7. Test again: `vcgencmd get_camera`
+
+**Step 4: Reboot after any config.txt changes**
+
+```bash
+sudo reboot
+```
+
+Wait 1 minute, then reconnect and test again.
+
+**Step 5: Test camera with a picture**
+
+```bash
+# Install camera tools if needed
+sudo apt install -y libcamera-apps
+
+# Take a test picture
+rpicam-still -o test_image.jpg
+```
+
+If this creates `test_image.jpg`, your camera hardware is working!
+
+**Step 6: If rpicam-still works but Music Butler still can't access camera**
+
+This means OpenCV can't find the camera device. Check available video devices:
+
+```bash
+ls -l /dev/video*
+```
+
+You should see devices like `/dev/video0`, `/dev/video10`, etc. The updated Music Butler code will automatically try devices 0-9, so this should work. If it still doesn't, try rebooting:
+
+```bash
+sudo reboot
+```
+
+After reboot, the camera should be accessible to OpenCV.
+
+---
+
 ### Run Music Butler
 
 ```bash
