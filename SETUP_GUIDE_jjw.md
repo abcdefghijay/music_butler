@@ -403,15 +403,41 @@ speaker-test -c2 -t wav
 
 ### Install Dependencies
 
+**Step 1: Install system packages**
+
 ```bash
 # System packages
 sudo apt-get install -y python3-pip python3-opencv libzbar0 python3-numpy \
   libusb-1.0-0-dev python3-pil git curl
+```
 
+**Step 2: Install Python libraries**
+
+**Option A: Using requirements.txt (Recommended)**
+
+If you have a `requirements.txt` file in your project directory:
+
+```bash
+cd ~/music_butler
+pip3 install --break-system-packages -r requirements.txt
+```
+
+**Option B: Manual installation**
+
+```bash
 # Python libraries
 pip3 install --break-system-packages spotipy opencv-python pyzbar pillow \
   qrcode python-escpos adafruit-circuitpython-seesaw
 ```
+
+Both methods install the same packages. The `requirements.txt` method is easier to maintain and update.
+
+**Note about installation warnings:** If you see a warning like:
+```
+WARNING: The script python-escpos is installed in '/home/pi/.local/bin' which is not on PATH.
+```
+
+**This is safe to ignore.** Music Butler uses the Python library directly (not command-line tools), so the library will work fine even if the script directory isn't in your PATH. The printer functionality will work correctly when you get to Part 10.
 
 ### Enable I2C (for Rotary Encoder)
 
@@ -566,8 +592,8 @@ sudo systemctl restart raspotify
 ### Get Credentials
 
 1. Click **"Settings"** (top right)
-2. Copy your **Client ID**
-3. Click **"View client secret"** → Copy **Client Secret**
+2. Copy your **Client ID** (9e21448916e84b3e827a989999c2b625)
+3. Click **"View client secret"** → Copy **Client Secret** (a4c3c7336b92401da64c92ec3971f588)
 4. **Save these somewhere** - you'll need them next!
 
 ---
@@ -582,8 +608,8 @@ sudo systemctl restart raspotify
 
 ```bash
 cd ~
-git clone https://github.com/yourusername/music-butler.git
-cd music-butler
+git clone https://github.com/abcdefghijay/music_butler.git
+cd music_butler
 ```
 
 **Option B: Create manually**
@@ -669,7 +695,7 @@ X-GNOME-Autostart-enabled=true
 ### Run Music Butler
 
 ```bash
-cd ~/music-butler
+cd ~/music_butler
 python3 music_butler.py
 ```
 
