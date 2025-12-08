@@ -42,21 +42,24 @@ except ImportError:
     print("  Install with: pip3 install --break-system-packages adafruit-circuitpython-seesaw")
 
 # =============================================================================
-# CONFIGURATION - EDIT THESE VALUES
+# CONFIGURATION - Load from config.py
 # =============================================================================
 
-# Spotify API Credentials (get from https://developer.spotify.com/dashboard)
-SPOTIPY_CLIENT_ID = 'YOUR_CLIENT_ID_HERE'
-SPOTIPY_CLIENT_SECRET = 'YOUR_CLIENT_SECRET_HERE'
-SPOTIPY_REDIRECT_URI = 'http://localhost:8888/callback'
-
-# Printer USB IDs (find with 'lsusb' command after connecting printer)
-# Common Phomemo M02 IDs: 0x0fe6:0x811e or 0x0416:0x5011 or 0x28e9:0x0289
-PRINTER_VENDOR_ID = 0x0000  # Replace with your printer's vendor ID (e.g., 0x0fe6)
-PRINTER_PRODUCT_ID = 0x0000  # Replace with your printer's product ID (e.g., 0x811e)
-
-# Enable/disable printer (set to False if no printer connected)
-PRINTER_ENABLED = True
+# Import configuration from config.py (user-specific settings)
+try:
+    from config import (
+        SPOTIPY_CLIENT_ID,
+        SPOTIPY_CLIENT_SECRET,
+        SPOTIPY_REDIRECT_URI,
+        PRINTER_VENDOR_ID,
+        PRINTER_PRODUCT_ID,
+        PRINTER_ENABLED
+    )
+except ImportError:
+    print("❌ ERROR: config.py not found!")
+    print("Please create config.py with your Spotify credentials.")
+    print("See config.py.example for a template.")
+    sys.exit(1)
 
 # Spotify API scopes
 SCOPE = 'user-read-playback-state,user-modify-playback-state,playlist-read-private'
@@ -348,10 +351,10 @@ class MusicButler:
         # Check credentials
         if SPOTIPY_CLIENT_ID == 'YOUR_CLIENT_ID_HERE':
             print("\n❌ ERROR: Spotify API credentials not configured!")
-            print("\nPlease edit music_butler.py and add your credentials:")
+            print("\nPlease edit config.py and add your credentials:")
             print("1. Go to: https://developer.spotify.com/dashboard")
             print("2. Create an app and get your Client ID and Secret")
-            print("3. Edit music_butler.py and replace YOUR_CLIENT_ID_HERE")
+            print("3. Edit config.py and replace YOUR_CLIENT_ID_HERE")
             print("   and YOUR_CLIENT_SECRET_HERE with your actual values\n")
             sys.exit(1)
         
@@ -380,7 +383,27 @@ class MusicButler:
         self.camera = None
         camera_found = False
         
-        for device_index in range(10):  # Try devices 0-9
+        # First, check what video devices actually exist
+        import os
+        import glob
+        video_devices = []
+        for dev_path in glob.glob('/dev/video*'):
+            try:
+                # Extract device number from path (e.g., /dev/video10 -> 10)
+                dev_num = int(dev_path.replace('/dev/video', ''))
+                video_devices.append(dev_num)
+            except ValueError:
+                continue
+        
+        # Try existing devices first, then fall back to range 0-20
+        devices_to_try = sorted(set(video_devices + list(range(21))))
+        
+        # Suppress OpenCV warnings temporarily
+        import warnings
+        import logging
+        logging.getLogger().setLevel(logging.ERROR)
+        
+        for device_index in devices_to_try:
             try:
                 test_camera = cv2.VideoCapture(device_index)
                 if test_camera.isOpened():
@@ -392,22 +415,31 @@ class MusicButler:
                     if ret:
                         self.camera = test_camera
                         camera_found = True
-                        print(f"✓ Camera initialized on device {device_index}")
+                        print(f"✓ Camera initialized on device {device_index} ({'/dev/video' + str(device_index) if device_index in video_devices else 'index'})")
                         break
                     else:
                         test_camera.release()
+                else:
+                    test_camera.release()
             except Exception:
                 continue
         
+        # Restore logging
+        logging.getLogger().setLevel(logging.WARNING)
+        
         if not camera_found:
             print("❌ Failed to initialize camera: Could not read from camera")
+            print(f"\nFound video devices: {sorted(video_devices) if video_devices else 'none'}")
             print("\nTroubleshooting:")
             print("- Check camera cable connection")
             print("- Verify camera is enabled in /boot/firmware/config.txt")
             print("- Try: vcgencmd get_camera")
             print("- Try: ls -l /dev/video*")
+            print("- Try: rpicam-still -o test.jpg (to verify camera works)")
             print("- Note: If rpicam-still works, camera hardware is fine.")
             print("  The issue is OpenCV accessing the camera. Try rebooting.")
+            print("\nAlternative: You may need to use libcamera-vid to create a V4L2 device:")
+            print("  libcamera-vid -t 0 --inline --listen -o tcp://0.0.0.0:8888")
             sys.exit(1)
         
         # Scanner state

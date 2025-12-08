@@ -621,26 +621,38 @@ cd ~/music-butler
 
 ### Create Main Application
 
+**Step 1: Create music_butler.py**
+
 ```bash
 nano music_butler.py
 ```
 
-Copy the complete code from the `music_butler.py` artifact (see earlier in our conversation).
-
-**Scroll to top and find these lines:**
-
-```python
-SPOTIPY_CLIENT_ID = 'YOUR_CLIENT_ID_HERE'
-SPOTIPY_CLIENT_SECRET = 'YOUR_CLIENT_SECRET_HERE'
-```
-
-**Replace with your actual Spotify credentials from Part 6.**
+Copy the complete code from the `music_butler.py` file.
 
 **Save:** `Ctrl+X` → `Y` → `Enter`
 
 ```bash
 chmod +x music_butler.py
 ```
+
+**Step 2: Create config.py (for your credentials)**
+
+```bash
+nano config.py
+```
+
+Copy the contents from the `config.py` file, then edit it:
+
+```python
+SPOTIPY_CLIENT_ID = 'YOUR_CLIENT_ID_HERE'  # Replace with your Client ID
+SPOTIPY_CLIENT_SECRET = 'YOUR_CLIENT_SECRET_HERE'  # Replace with your Client Secret
+```
+
+**Replace with your actual Spotify credentials from Part 6.**
+
+**Save:** `Ctrl+X` → `Y` → `Enter`
+
+**Important:** The `config.py` file contains your personal credentials and is NOT overwritten when you update `music_butler.py`. This allows you to safely update the main application without losing your settings.
 
 ### Create Startup Script
 
