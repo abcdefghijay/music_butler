@@ -20,6 +20,7 @@ import os
 import qrcode
 from PIL import Image, ImageDraw, ImageFont
 import threading
+import argparse
 
 # Try to import picamera2 (for direct libcamera access on Raspberry Pi)
 try:
@@ -351,7 +352,8 @@ class RotaryEncoderHandler:
 class MusicButler:
     """Main application class for QR code scanning and playback"""
     
-    def __init__(self):
+    def __init__(self, force_display=False):
+        self._force_display = force_display
         print("\n" + "="*60)
         print("  MUSIC BUTLER - Initialization")
         print("="*60)
@@ -423,7 +425,6 @@ class MusicButler:
         # Fall back to OpenCV VideoCapture if picamera2 didn't work
         if not camera_found:
             # Try multiple device indices (libcamera may use different device numbers)
-            import os
             import glob
             video_devices = []
             for dev_path in glob.glob('/dev/video*'):
@@ -484,9 +485,15 @@ class MusicButler:
         self.last_scan_time = 0
         self.scan_cooldown = SCAN_COOLDOWN
         self.print_mode = False
+        self.verbose = getattr(self, '_verbose', False)
+        self.debug_mode = getattr(self, '_debug_mode', False)
+        self.last_qr_attempt_time = 0
+        self.qr_detection_count = 0
         
         # Check if display is available (for showing camera preview)
         self.display_available = False
+        self.force_display = getattr(self, '_force_display', False)
+        
         try:
             # Check if DISPLAY environment variable is set (X11)
             if 'DISPLAY' in os.environ:
@@ -502,13 +509,21 @@ class MusicButler:
                 # Framebuffer available, but OpenCV might not work without X11
                 # We'll try anyway, but it may fail
                 self.display_available = False  # Conservative: assume no display
-        except Exception:
+        except Exception as e:
             self.display_available = False
+            if self.force_display:
+                print(f"⚠ Display test failed: {e}")
         
         if not self.display_available:
             print("⚠ Display not available - running in headless mode")
             print("  Camera will work, but no preview window will be shown")
+            if 'DISPLAY' not in os.environ:
+                print("\n  To enable camera preview:")
+                print("  • If running on Pi directly: DISPLAY=:0 python3 music_butler.py")
+                print("  • If running via SSH: ssh -X pi@musicbutler.local")
             print("  Use keyboard controls: 'q' to quit, '+'/'-' for volume")
+        else:
+            print("✓ Display available - camera preview will be shown")
         
         # Playback state tracking
         self.current_volume = DEFAULT_VOLUME
@@ -774,8 +789,17 @@ class MusicButler:
         """
         decoded_objects = pyzbar.decode(frame)
         
+        if decoded_objects:
+            self.qr_detection_count += 1
+        
         for obj in decoded_objects:
-            qr_data = obj.data.decode('utf-8')
+            try:
+                qr_data = obj.data.decode('utf-8')
+            except UnicodeDecodeError:
+                try:
+                    qr_data = obj.data.decode('latin-1')
+                except:
+                    qr_data = str(obj.data)
             
             # Draw rectangle around QR code
             points = obj.polygon
@@ -783,16 +807,35 @@ class MusicButler:
                 pts = [(point.x, point.y) for point in points]
                 pts = np.array(pts, np.int32)
                 
-                # Color based on mode
-                color = (255, 165, 0) if self.print_mode else (0, 255, 0)
+                # Color based on mode and validity
+                is_spotify = qr_data.startswith(('spotify:playlist:', 'spotify:album:', 'spotify:track:'))
+                if is_spotify:
+                    color = (255, 165, 0) if self.print_mode else (0, 255, 0)  # Orange for print, green for play
+                else:
+                    color = (0, 165, 255)  # Blue for non-Spotify QR codes
+                
                 cv2.polylines(frame, [pts], True, color, 3)
                 
-                # Add mode text
+                # Add mode text and QR data preview
                 mode_text = "PRINT MODE" if self.print_mode else "PLAY MODE"
+                if is_spotify:
+                    status_text = "✓ VALID SPOTIFY"
+                else:
+                    status_text = "⚠ NOT SPOTIFY"
+                    if self.debug_mode:
+                        # Show first 30 chars of QR data for debugging
+                        preview = qr_data[:30] + "..." if len(qr_data) > 30 else qr_data
+                        status_text = f"⚠ {preview}"
+                
                 cv2.putText(
                     frame, mode_text,
-                    (pts[0][0], pts[0][1] - 10),
+                    (pts[0][0], pts[0][1] - 25),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2
+                )
+                cv2.putText(
+                    frame, status_text,
+                    (pts[0][0], pts[0][1] - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1
                 )
             
             return qr_data
@@ -847,17 +890,27 @@ class MusicButler:
                 
                 # Decode QR code
                 qr_data = self.decode_qr(frame)
+                current_time = time.time()
+                
+                # Show debug info about QR detection attempts
+                if self.debug_mode and (current_time - self.last_qr_attempt_time) > 1.0:
+                    if qr_data:
+                        print(f"[DEBUG] QR detected: {qr_data[:50]}...")
+                    self.last_qr_attempt_time = current_time
                 
                 # Process QR code if found and cooldown passed
-                current_time = time.time()
                 if qr_data and (current_time - self.last_scan_time) > self.scan_cooldown:
                     if qr_data != self.last_qr_code:
-                        print(f"\n→ QR Code detected: {qr_data}")
+                        print(f"\n{'='*60}")
+                        print(f"→ QR Code detected: {qr_data}")
+                        print(f"{'='*60}")
                         
                         # Validate Spotify URI
                         if qr_data.startswith(('spotify:playlist:', 
                                               'spotify:album:', 
                                               'spotify:track:')):
+                            
+                            print("✓ Valid Spotify URI detected!")
                             
                             # Execute action based on mode
                             if self.print_mode:
@@ -871,9 +924,30 @@ class MusicButler:
                             self.last_scan_time = current_time
                         else:
                             print("✗ Not a supported Spotify URI")
-                            print("  Expected: spotify:playlist:XXXXX")
-                            print("           spotify:album:XXXXX")
-                            print("           spotify:track:XXXXX")
+                            print(f"\n  Detected QR code content: {qr_data}")
+                            print(f"  Length: {len(qr_data)} characters")
+                            print("\n  Expected format:")
+                            print("    • spotify:playlist:XXXXX")
+                            print("    • spotify:album:XXXXX")
+                            print("    • spotify:track:XXXXX")
+                            print("\n  Common issues:")
+                            print("    • QR code might be for a Spotify URL (https://open.spotify.com/...)")
+                            print("    • QR code might be for a different service")
+                            print("    • QR code might be corrupted or incomplete")
+                            
+                            # Show first/last few chars for debugging
+                            if len(qr_data) > 60:
+                                print(f"\n  First 30 chars: {qr_data[:30]}")
+                                print(f"  Last 30 chars: ...{qr_data[-30:]}")
+                            
+                            # Still update last_qr_code to prevent spam
+                            self.last_qr_code = qr_data
+                            self.last_scan_time = current_time
+                elif qr_data and self.verbose:
+                    # QR code detected but in cooldown
+                    time_remaining = self.scan_cooldown - (current_time - self.last_scan_time)
+                    if time_remaining > 0:
+                        print(f"[Cooldown: {time_remaining:.1f}s] Same QR code detected")
                 
                 # Draw UI overlay
                 mode_text = "MODE: PRINT STICKER" if self.print_mode else "MODE: PLAY MUSIC"
@@ -961,8 +1035,57 @@ class MusicButler:
 # =============================================================================
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description='Music Butler - Spotify QR Code Player',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Run with display (on Pi with monitor):
+  DISPLAY=:0 python3 music_butler.py
+
+  # Run with display (via SSH with X11 forwarding):
+  ssh -X pi@musicbutler.local
+  python3 music_butler.py
+
+  # Force display mode (will show error if display unavailable):
+  python3 music_butler.py --display
+
+  # Run in headless mode (no camera preview):
+  python3 music_butler.py --no-display
+        """
+    )
+    parser.add_argument(
+        '--display', '-d',
+        action='store_true',
+        help='Force display mode (show error if display unavailable)'
+    )
+    parser.add_argument(
+        '--no-display',
+        action='store_true',
+        help='Run in headless mode (no camera preview window)'
+    )
+    args = parser.parse_args()
+    
+    # Set DISPLAY if requested
+    if args.display and 'DISPLAY' not in os.environ:
+        # Try common display values
+        if os.path.exists('/dev/tty7') or os.path.exists('/dev/tty1'):
+            os.environ['DISPLAY'] = ':0'
+            print("→ Set DISPLAY=:0 for local display")
+        else:
+            print("⚠ Warning: DISPLAY not set. Set it manually:")
+            print("  export DISPLAY=:0  # For local display")
+            print("  Or use: ssh -X pi@musicbutler.local  # For SSH with X11")
+    
+    # Override display availability if --no-display is set
+    force_display = args.display
+    no_display = args.no_display
+    
     try:
-        butler = MusicButler()
+        butler = MusicButler(force_display=force_display)
+        if no_display:
+            butler.display_available = False
+            print("→ Running in headless mode (--no-display flag)")
         butler.run()
     except Exception as e:
         print(f"\n❌ Fatal error: {e}")
