@@ -96,6 +96,8 @@ class StickerPrinter:
     def __init__(self, vendor_id, product_id):
         self.enabled = False
         self.printer = None
+        self.vendor_id = vendor_id
+        self.product_id = product_id
         
         if not ESCPOS_AVAILABLE:
             print("⚠ Printer library not available")
@@ -111,6 +113,7 @@ class StickerPrinter:
                 try:
                     self.printer = Usb(vendor_id, product_id, profile=profile)
                     self.enabled = True
+                    self.profile = profile
                     print(f"✓ Sticker printer connected (profile: {profile})")
                     break
                 except:
@@ -209,7 +212,9 @@ class StickerPrinter:
                 draw.text((x_pos, y_pos), artist_or_owner, fill=0, font=font_artist)
             
             # Print the sticker
-            self.printer.image(sticker, center=True)
+            # Don't use center=True since the profile doesn't have media.width.pixel set
+            # This avoids the warning and potential endpoint errors
+            self.printer.image(sticker, center=False)
             self.printer.text("\n\n")
             self.printer.cut()
             
@@ -217,7 +222,41 @@ class StickerPrinter:
             return True
             
         except Exception as e:
-            print(f"✗ Error printing sticker: {e}")
+            error_msg = str(e)
+            print(f"✗ Error printing sticker: {error_msg}")
+            
+            # Provide helpful error messages for common issues
+            if "endpoint" in error_msg.lower() or "0x1" in error_msg or "invalid endpoint" in error_msg.lower():
+                print("  → USB endpoint error detected")
+                print("  → Troubleshooting steps:")
+                print("     1. Unplug and replug the printer USB cable")
+                print("     2. Check USB connection: lsusb | grep -i 'your_printer_vendor'")
+                print("     3. Verify printer IDs in config.py match lsusb output")
+                print("     4. Try a different USB port")
+                print("     5. Check if printer needs drivers: dmesg | tail -20")
+                # Try to reinitialize printer connection
+                try:
+                    print("  → Attempting to reconnect printer...")
+                    # Try the same profile first, then others
+                    profiles_to_try = [self.profile] if hasattr(self, 'profile') else ['simple', 'default', 'POS-5890']
+                    for profile in profiles_to_try:
+                        try:
+                            self.printer = Usb(self.vendor_id, self.product_id, profile=profile)
+                            self.profile = profile
+                            print(f"  → Reconnected with profile: {profile}")
+                            break
+                        except:
+                            continue
+                    else:
+                        raise Exception("Could not reconnect with any profile")
+                except Exception as reconnect_error:
+                    print(f"  → Reconnection failed: {reconnect_error}")
+            elif "permission" in error_msg.lower() or "access" in error_msg.lower():
+                print("  → Permission error - try:")
+                print("     1. Add user to printer group: sudo usermod -a -G lp pi")
+                print("     2. Check udev rules for USB device permissions")
+                print("     3. Verify USB device permissions: ls -l /dev/bus/usb/")
+            
             return False
 
 # =============================================================================

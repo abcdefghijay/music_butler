@@ -52,7 +52,12 @@ def extract_title_from_uri(uri):
     return "QR Code"
 
 def create_qr_code(name, uri, output_dir="QR_codes", show=False, print_sticker=False, printer=None):
-    """Create a QR code image for a Spotify URI"""
+    """Create a QR code image for a Spotify URI
+    
+    Returns:
+        tuple: (filename, print_success) where print_success is True/False/None
+               (None if printing was not attempted)
+    """
     import os
     
     # Normalize URI - convert URL to URI if needed
@@ -86,11 +91,12 @@ def create_qr_code(name, uri, output_dir="QR_codes", show=False, print_sticker=F
     print(f"✓ Created: {filename}")
     
     # Print if requested
+    print_success = None
     if print_sticker and printer:
         if printer.enabled:
             title = name if name != extract_title_from_uri(uri) else extract_title_from_uri(uri)
-            success = printer.print_qr_sticker(uri, title, "")
-            if success:
+            print_success = printer.print_qr_sticker(uri, title, "")
+            if print_success:
                 print(f"  → Printed sticker for '{name}'")
             else:
                 print(f"  ✗ Failed to print sticker")
@@ -111,6 +117,8 @@ def create_qr_code(name, uri, output_dir="QR_codes", show=False, print_sticker=F
         except Exception as e:
             print(f"  ⚠ Could not display image: {e}")
             print(f"  → View manually: xdg-open {filename}")
+    
+    return filename, print_success
 
 def main():
     """Generate all QR codes"""
@@ -176,12 +184,17 @@ def main():
         name = args.name if args.name else extract_title_from_uri(uri)
         
         print(f"Generating QR code for: {uri}\n")
-        create_qr_code(name, uri, show=args.show, print_sticker=args.print, printer=printer)
+        filename, print_success = create_qr_code(name, uri, show=args.show, print_sticker=args.print, printer=printer)
         
         print("\n" + "="*50)
         print(f"✓ Done!")
-        if args.print and printer and printer.enabled:
-            print("  → QR code printed successfully!")
+        if args.print:
+            if print_success is True:
+                print("  → QR code printed successfully!")
+            elif print_success is False:
+                print("  ✗ QR code generation succeeded, but printing failed")
+            elif printer and not printer.enabled:
+                print("  ⚠ Printer not available")
         return
     
     # Otherwise, use the playlist-based workflow
@@ -214,11 +227,22 @@ def main():
     
     print(f"Generating {len(playlists_to_generate)} QR code(s)...\n")
     
+    print_results = []
     for name, uri in playlists_to_generate.items():
-        create_qr_code(name, uri, show=args.show, print_sticker=args.print, printer=printer)
+        filename, print_success = create_qr_code(name, uri, show=args.show, print_sticker=args.print, printer=printer)
+        if args.print:
+            print_results.append(print_success)
     
     print("\n" + "="*50)
     print(f"✓ Done! Created {len(playlists_to_generate)} QR code(s) in ./QR_codes/")
+    
+    if args.print and print_results:
+        successful_prints = sum(1 for r in print_results if r is True)
+        failed_prints = sum(1 for r in print_results if r is False)
+        if successful_prints > 0:
+            print(f"  → Successfully printed {successful_prints} sticker(s)")
+        if failed_prints > 0:
+            print(f"  ✗ Failed to print {failed_prints} sticker(s)")
     
     if not args.show:
         print("\nTo display QR codes:")
