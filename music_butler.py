@@ -310,6 +310,39 @@ class StickerPrinter:
             print(f"  ⚠ Warning: Could not reconnect printer: {e}")
             return False
     
+    def _initialize_printer(self):
+        """
+        Initialize/wake up the printer with ESC/POS commands.
+        Some printers need initialization before they'll print.
+        """
+        try:
+            # ESC @ - Initialize printer (resets printer to default state)
+            # This is a standard ESC/POS command that wakes up the printer
+            if hasattr(self.printer, '_raw'):
+                self.printer._raw(b'\x1b\x40')  # ESC @
+            elif hasattr(self.printer, 'device'):
+                self.printer.device.write(b'\x1b\x40')
+            elif hasattr(self.printer, 'hw') and hasattr(self.printer.hw, 'write'):
+                self.printer.hw.write(b'\x1b\x40')
+            
+            # Small delay to let printer process
+            time.sleep(0.05)
+            
+            # Some printers need a line feed or text command to wake up
+            try:
+                # Send a line feed to wake the printer
+                if hasattr(self.printer, 'control'):
+                    self.printer.control("LF")
+                elif hasattr(self.printer, '_raw'):
+                    self.printer._raw(b'\n')
+            except:
+                pass
+                
+        except Exception as e:
+            # Non-critical - continue even if init fails
+            # Some printers don't need initialization
+            pass
+    
     def test_print(self):
         """
         Test print - prints a simple test pattern to verify printer is working
@@ -323,36 +356,90 @@ class StickerPrinter:
         
         try:
             print("🖨 Testing printer with simple text...")
+            print(f"  → Printer: vendor=0x{self.vendor_id:04x}, product=0x{self.product_id:04x}")
+            
+            # Initialize/wake up printer
+            print("  → Initializing printer...")
+            self._initialize_printer()
             
             # Try a simple text print first
+            print("  → Sending text commands...")
             self.printer.text("TEST PRINT\n")
             self.printer.text("If you see this, printer is working!\n")
             self.printer.text("\n")
+            
+            # Send form feed to ensure printing starts
+            try:
+                self.printer.control("LF")  # Line feed
+                self.printer.control("FF")  # Form feed
+            except:
+                # If control() doesn't work, try raw commands
+                try:
+                    if hasattr(self.printer, '_raw'):
+                        self.printer._raw(b'\n\n\n')  # Multiple line feeds
+                except:
+                    pass
+            
+            print("  → Sending cut command...")
             self.printer.cut()
             
-            # Flush if available
-            flushed = False
+            # CRITICAL: Close the connection to flush buffer
+            # python-escpos buffers commands until connection is closed
+            print("  → Closing connection to flush buffer...")
+            connection_closed = False
             try:
-                if hasattr(self.printer, 'flush'):
-                    self.printer.flush()
-                    flushed = True
-                elif hasattr(self.printer, '_raw') and hasattr(self.printer._raw, 'flush'):
-                    self.printer._raw.flush()
-                    flushed = True
-            except:
-                pass
+                if hasattr(self.printer, 'close'):
+                    self.printer.close()
+                    connection_closed = True
+                    print("  ✓ Connection closed via close() method")
+                elif hasattr(self.printer, '_raw') and hasattr(self.printer._raw, 'close'):
+                    self.printer._raw.close()
+                    connection_closed = True
+                    print("  ✓ Connection closed via _raw.close() method")
+                elif hasattr(self.printer, 'device') and hasattr(self.printer.device, 'close'):
+                    self.printer.device.close()
+                    connection_closed = True
+                    print("  ✓ Connection closed via device.close() method")
+                else:
+                    print("  ⚠ No close() method found - trying alternative methods...")
+                    # Try to find and close the underlying USB device
+                    if hasattr(self.printer, 'hw'):
+                        if hasattr(self.printer.hw, 'close'):
+                            self.printer.hw.close()
+                            connection_closed = True
+                            print("  ✓ Connection closed via hw.close() method")
+            except Exception as close_error:
+                print(f"  ⚠ Could not close connection: {close_error}")
+                import traceback
+                traceback.print_exc()
             
-            # If flush didn't work, try closing/reopening to force buffer flush
-            if not flushed:
-                print("  → Flush not available, reconnecting to flush buffer...")
+            if not connection_closed:
+                print("  ⚠ WARNING: Could not close printer connection!")
+                print("  → Commands may be buffered and not sent to printer")
+                print("  → Try unplugging and replugging the printer USB cable")
+            
+            # Give printer time to process after closing
+            print("  → Waiting for printer to process commands...")
+            time.sleep(0.5)  # Longer delay to give printer time
+            
+            # Reconnect for next use
+            if connection_closed:
+                print("  → Reconnecting printer...")
                 self._reconnect_printer()
             
-            time.sleep(0.1)
-            print("✓ Test print sent - check if anything printed")
+            print("\n✓ Test print commands sent")
+            print("  → Check if anything printed from the printer")
+            print("  → If nothing printed, try:")
+            print("     1. Unplug and replug the USB cable")
+            print("     2. Press the power button on the printer")
+            print("     3. Check that paper is loaded correctly")
+            print("     4. Verify printer is powered on (LED should be on)")
             return True
             
         except Exception as e:
             print(f"✗ Test print failed: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def print_qr_sticker(self, spotify_uri, title, artist_or_owner=""):
@@ -452,6 +539,9 @@ class StickerPrinter:
                 x_pos = (sticker_width - text_width) // 2
                 draw.text((x_pos, y_pos), artist_or_owner, fill=0, font=font_artist)
             
+            # Initialize/wake up printer before printing
+            self._initialize_printer()
+            
             # Print the sticker
             # Set media width if not already set (for centering to work)
             self._set_media_width(self.printer, sticker_width)
@@ -475,35 +565,38 @@ class StickerPrinter:
             except Exception as cut_error:
                 print(f"  ⚠ Warning: Error sending cut command: {cut_error}")
             
-            # CRITICAL: Flush the printer buffer to ensure commands are sent
-            # python-escpos buffers commands and may not send until connection is closed
-            # Try multiple methods to flush the buffer
-            flushed = False
+            # CRITICAL: Close the connection to flush the buffer
+            # python-escpos buffers commands and they are NOT sent until connection is closed
+            # This is the most reliable way to ensure commands are actually sent to the printer
+            connection_closed = False
             try:
-                # Method 1: Direct flush if available
-                if hasattr(self.printer, 'flush'):
-                    self.printer.flush()
-                    flushed = True
-                # Method 2: Flush the raw USB connection
-                elif hasattr(self.printer, '_raw') and hasattr(self.printer._raw, 'flush'):
-                    self.printer._raw.flush()
-                    flushed = True
-                # Method 3: Try to access the underlying file-like object
-                elif hasattr(self.printer, 'device') and hasattr(self.printer.device, 'flush'):
-                    self.printer.device.flush()
-                    flushed = True
-            except Exception as flush_error:
-                print(f"  ⚠ Warning: Could not flush printer buffer: {flush_error}")
+                if hasattr(self.printer, 'close'):
+                    self.printer.close()
+                    connection_closed = True
+                elif hasattr(self.printer, '_raw') and hasattr(self.printer._raw, 'close'):
+                    self.printer._raw.close()
+                    connection_closed = True
+                elif hasattr(self.printer, 'device') and hasattr(self.printer.device, 'close'):
+                    self.printer.device.close()
+                    connection_closed = True
+            except Exception as close_error:
+                print(f"  ⚠ Warning: Could not close printer connection: {close_error}")
             
-            # If flush didn't work, reconnect to force buffer flush
-            # This is the most reliable way to ensure commands are sent
-            # python-escpos often buffers commands until connection is closed
-            if not flushed:
+            # Give printer time to process the commands after closing
+            time.sleep(0.2)
+            
+            # Reconnect for next print operation
+            if connection_closed:
                 self._reconnect_printer()
-            
-            # Give printer time to process the commands
-            # Some printers need a small delay before they start printing
-            time.sleep(0.1)
+            else:
+                # If we couldn't close, try to flush instead
+                try:
+                    if hasattr(self.printer, 'flush'):
+                        self.printer.flush()
+                    elif hasattr(self.printer, '_raw') and hasattr(self.printer._raw, 'flush'):
+                        self.printer._raw.flush()
+                except:
+                    pass
             
             print(f"✓ Sticker printed successfully")
             return True
@@ -565,29 +658,34 @@ class StickerPrinter:
                     
                     # Retry printing after reconnection
                     print("  → Retrying print operation...")
+                    
+                    # Initialize printer
+                    self._initialize_printer()
+                    
                     # Set media width if not already set (for centering to work)
                     self._set_media_width(self.printer, sticker_width)
                     self.printer.image(sticker, center=True)
                     self.printer.text("\n\n")
                     self.printer.cut()
                     
-                    # CRITICAL: Flush the printer buffer to ensure commands are sent
-                    flushed = False
+                    # CRITICAL: Close the connection to flush the buffer
+                    connection_closed = False
                     try:
-                        if hasattr(self.printer, 'flush'):
-                            self.printer.flush()
-                            flushed = True
-                        elif hasattr(self.printer, '_raw') and hasattr(self.printer._raw, 'flush'):
-                            self.printer._raw.flush()
-                            flushed = True
-                        elif hasattr(self.printer, 'device') and hasattr(self.printer.device, 'flush'):
-                            self.printer.device.flush()
-                            flushed = True
-                    except Exception as flush_error:
-                        print(f"  ⚠ Warning: Could not flush printer buffer: {flush_error}")
+                        if hasattr(self.printer, 'close'):
+                            self.printer.close()
+                            connection_closed = True
+                        elif hasattr(self.printer, '_raw') and hasattr(self.printer._raw, 'close'):
+                            self.printer._raw.close()
+                            connection_closed = True
+                    except Exception as close_error:
+                        print(f"  ⚠ Warning: Could not close printer connection: {close_error}")
                     
-                    # Give printer time to process
-                    time.sleep(0.1)
+                    # Give printer time to process after closing
+                    time.sleep(0.2)
+                    
+                    # Reconnect for next use
+                    if connection_closed:
+                        self._reconnect_printer()
                     
                     print(f"✓ Sticker printed successfully")
                     return True
