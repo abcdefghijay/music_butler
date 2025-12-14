@@ -593,75 +593,92 @@ class StickerPrinter:
                 draw.text((x_pos, y_pos), artist_or_owner, fill=0, font=font_artist)
             
             # Initialize/wake up printer before printing
+            print("  → Initializing printer...")
             self._initialize_printer()
+            time.sleep(0.2)  # Give printer time to wake up
             
-            # Print the sticker
-            # Set media width if not already set (for centering to work)
-            media_width_set = self._set_media_width(self.printer, sticker_width)
-            if not media_width_set:
-                print("  ⚠ Warning: Could not set media width - centering may not work")
+            # Send a test line first to wake up the printer and verify it's responding
+            # Some printers need text before they'll print images
+            try:
+                print("  → Sending wake-up text...")
+                self.printer.text("")  # Empty text to wake printer
+                time.sleep(0.1)
+            except Exception as wake_error:
+                print(f"  ⚠ Warning: Wake-up text failed: {wake_error}")
+            
+            # Always use manual centering (skip center flag to avoid media width warning)
+            # The sticker is already 384 pixels wide, so it should fit perfectly
+            # But ensure it's exactly the right width
+            if sticker.width != sticker_width:
+                # Resize or pad to exact width
+                if sticker.width < sticker_width:
+                    # Add padding to center
+                    padding_left = (sticker_width - sticker.width) // 2
+                    centered_sticker = Image.new('1', (sticker_width, sticker.height), 1)
+                    centered_sticker.paste(sticker, (padding_left, 0))
+                    sticker = centered_sticker
+                else:
+                    # Resize to fit
+                    sticker = sticker.resize((sticker_width, int(sticker.height * sticker_width / sticker.width)), Image.Resampling.LANCZOS)
             
             # Try multiple methods to send image to printer
             image_sent = False
             img_error = None
             
-            # Method 1: Try with center flag (if media width was set)
-            if media_width_set:
-                try:
-                    self.printer.image(sticker, center=True)
-                    image_sent = True
-                except Exception as e:
-                    img_error = e
-                    print(f"  ⚠ Warning: Failed to print with center flag: {e}")
+            print(f"  → Sending image to printer (size: {sticker.width}x{sticker.height}, mode: {sticker.mode})...")
             
-            # Method 2: Try without center flag (manual centering)
-            if not image_sent:
-                try:
-                    # Calculate manual centering offset
-                    # Most thermal printers are 384 pixels wide
-                    img_width = sticker.width
-                    if img_width < sticker_width:
-                        # Center the image manually by adding padding
-                        padding_left = (sticker_width - img_width) // 2
-                        # Create a new image with padding
-                        centered_sticker = Image.new('1', (sticker_width, sticker.height), 1)
-                        centered_sticker.paste(sticker, (padding_left, 0))
-                        sticker = centered_sticker
-                    
-                    self.printer.image(sticker, center=False)
-                    image_sent = True
-                except Exception as e:
-                    img_error = e
-                    print(f"  ⚠ Warning: Failed to print without center flag: {e}")
+            # Ensure image is in 1-bit mode (required for thermal printers)
+            if sticker.mode != '1':
+                sticker = sticker.convert('1')
+                print("  → Converted image to 1-bit mode")
             
-            # Method 3: Try with different image format (convert to RGB if needed)
-            if not image_sent:
-                try:
-                    # Some printers need RGB mode instead of '1' (1-bit)
-                    if sticker.mode == '1':
-                        sticker_rgb = sticker.convert('RGB')
-                        self.printer.image(sticker_rgb, center=False)
-                    else:
-                        self.printer.image(sticker, center=False)
-                    image_sent = True
-                except Exception as e:
-                    img_error = e
-                    print(f"  ⚠ Warning: Failed to print with RGB conversion: {e}")
+            # Try printing with 1-bit image (preferred for thermal printers)
+            # Skip center flag to avoid media width warning
+            image_sent = False
+            img_error = None
+            
+            try:
+                # Use image() method without center flag
+                self.printer.image(sticker, center=False)
+                image_sent = True
+                print("  → Image sent successfully")
+            except Exception as e:
+                img_error = e
+                print(f"  ✗ Error sending image: {e}")
+                print(f"  → Error type: {type(e).__name__}")
+                # Try to get more details
+                import traceback
+                print(f"  → Traceback:")
+                for line in traceback.format_exc().split('\n')[:5]:
+                    if line.strip():
+                        print(f"    {line}")
             
             if not image_sent:
-                raise Exception(f"Could not send image to printer. Last error: {img_error}")
+                raise Exception(f"Could not send image to printer: {img_error}")
             
             # Feed some blank lines before cutting
+            print("  → Sending line feeds...")
             try:
                 self.printer.text("\n\n")
             except Exception as text_error:
                 print(f"  ⚠ Warning: Error sending text: {text_error}")
             
             # Cut the paper
+            print("  → Sending cut command...")
             try:
                 self.printer.cut()
             except Exception as cut_error:
                 print(f"  ⚠ Warning: Error sending cut command: {cut_error}")
+            
+            # Some printers need a form feed to actually print
+            print("  → Sending form feed...")
+            try:
+                if hasattr(self.printer, 'control'):
+                    self.printer.control("FF")  # Form feed
+                elif hasattr(self.printer, '_raw'):
+                    self.printer._raw(b'\x0c')  # Form feed byte
+            except:
+                pass  # Form feed is optional
             
             # CRITICAL: Flush and close the connection to ensure commands are sent
             # python-escpos buffers commands and they are NOT sent until connection is closed
@@ -698,13 +715,18 @@ class StickerPrinter:
             
             # Give printer time to process the commands after closing
             # Longer delay to ensure printer has time to print
-            time.sleep(0.5)
+            print("  → Waiting for printer to process commands...")
+            time.sleep(1.0)  # Increased delay - some printers need more time
             
             # Reconnect for next print operation
             if connection_closed:
-                self._reconnect_printer()
+                print("  → Reconnecting printer for next operation...")
+                reconnect_success = self._reconnect_printer()
+                if not reconnect_success:
+                    print("  ⚠ Warning: Could not reconnect printer")
             else:
                 # If we couldn't close, try to flush instead
+                print("  → Connection not closed, trying to flush...")
                 try:
                     if hasattr(self.printer, 'flush'):
                         self.printer.flush()
@@ -713,7 +735,11 @@ class StickerPrinter:
                 except:
                     pass
             
-            print(f"✓ Sticker printed successfully")
+            print(f"✓ Sticker print commands sent successfully")
+            print(f"  → If nothing printed, try:")
+            print(f"     1. Check printer power and paper")
+            print(f"     2. Run test print: python3 -c \"from music_butler import StickerPrinter; import config; p=StickerPrinter(config.PRINTER_VENDOR_ID, config.PRINTER_PRODUCT_ID); p.test_print()\"")
+            print(f"     3. Unplug and replug USB cable")
             return True
             
         except Exception as e:
