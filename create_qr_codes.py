@@ -19,15 +19,6 @@ except ImportError:
     PRINTER_AVAILABLE = False
     StickerPrinter = None
 
-# Try to import Spotify API functionality
-try:
-    import spotipy
-    from spotipy.oauth2 import SpotifyOAuth
-    SPOTIFY_AVAILABLE = True
-except ImportError:
-    SPOTIFY_AVAILABLE = False
-    spotipy = None
-
 # Add your playlists here
 PLAYLISTS = {
     # "Chill Vibes": "spotify:playlist:37i9dQZF1DX4WYpdgoIcn6",
@@ -60,82 +51,7 @@ def extract_title_from_uri(uri):
             return content_type
     return "QR Code"
 
-def get_spotify_info(uri, spotify_client=None):
-    """
-    Get detailed info about Spotify content (album, playlist, track)
-    
-    Args:
-        uri: Spotify URI
-        spotify_client: Optional spotipy.Spotify client (if None, will try to create one)
-    
-    Returns:
-        dict: Content information with 'title' and 'subtitle' keys
-    """
-    if not SPOTIFY_AVAILABLE:
-        return {'title': extract_title_from_uri(uri), 'subtitle': ''}
-    
-    # Create Spotify client if not provided
-    if spotify_client is None:
-        try:
-            from config import (
-                SPOTIPY_CLIENT_ID,
-                SPOTIPY_CLIENT_SECRET,
-                SPOTIPY_REDIRECT_URI
-            )
-            spotify_client = spotipy.Spotify(auth_manager=SpotifyOAuth(
-                client_id=SPOTIPY_CLIENT_ID,
-                client_secret=SPOTIPY_CLIENT_SECRET,
-                redirect_uri=SPOTIPY_REDIRECT_URI,
-                scope='playlist-read-private',
-                cache_path='.spotify_cache'
-            ))
-        except (ImportError, AttributeError, KeyError) as e:
-            # Config missing or invalid - fall back to generic title
-            return {'title': extract_title_from_uri(uri), 'subtitle': ''}
-        except Exception as e:
-            # Authentication or other error - fall back to generic title
-            # Don't print error to avoid cluttering output
-            return {'title': extract_title_from_uri(uri), 'subtitle': ''}
-    
-    # If client is still None or invalid, fall back
-    if spotify_client is None:
-        return {'title': extract_title_from_uri(uri), 'subtitle': ''}
-    
-    try:
-        if uri.startswith('spotify:playlist:'):
-            playlist_id = uri.split(':')[-1]
-            playlist = spotify_client.playlist(playlist_id)
-            return {
-                'title': playlist['name'],
-                'subtitle': f"Playlist by {playlist['owner']['display_name']}"
-            }
-        elif uri.startswith('spotify:album:'):
-            album_id = uri.split(':')[-1]
-            album = spotify_client.album(album_id)
-            artist_name = album['artists'][0]['name'] if album['artists'] else 'Unknown Artist'
-            return {
-                'title': album['name'],
-                'subtitle': f"Album by {artist_name}"
-            }
-        elif uri.startswith('spotify:track:'):
-            track_id = uri.split(':')[-1]
-            track = spotify_client.track(track_id)
-            artist_name = track['artists'][0]['name'] if track['artists'] else 'Unknown Artist'
-            return {
-                'title': track['name'],
-                'subtitle': f"by {artist_name}"
-            }
-    except (AttributeError, KeyError, IndexError) as e:
-        # Data structure error - fall back to generic title
-        return {'title': extract_title_from_uri(uri), 'subtitle': ''}
-    except Exception as e:
-        # API call failed (auth error, not found, network error, etc.) - fall back to generic title
-        # This catches all spotipy exceptions and any other errors
-        return {'title': extract_title_from_uri(uri), 'subtitle': ''}
-    
-    return {'title': extract_title_from_uri(uri), 'subtitle': ''}
-
-def create_qr_code(name, uri, output_dir="QR_codes", show=False, print_sticker=False, printer=None, spotify_client=None):
+def create_qr_code(name, uri, output_dir="QR_codes", show=False, print_sticker=False, printer=None):
     """Create a QR code image for a Spotify URI
     
     Returns:
@@ -178,14 +94,10 @@ def create_qr_code(name, uri, output_dir="QR_codes", show=False, print_sticker=F
     print_success = None
     if print_sticker and printer:
         if printer.enabled:
-            # Try to get Spotify metadata for better sticker text
-            spotify_info = get_spotify_info(uri, spotify_client=spotify_client)
-            title = spotify_info.get('title', name if name != extract_title_from_uri(uri) else extract_title_from_uri(uri))
-            subtitle = spotify_info.get('subtitle', '')
-            
-            print_success = printer.print_qr_sticker(uri, title, subtitle)
+            title = name if name != extract_title_from_uri(uri) else extract_title_from_uri(uri)
+            print_success = printer.print_qr_sticker(uri, title, "")
             if print_success:
-                print(f"  → Printed sticker for '{title}'")
+                print(f"  → Printed sticker for '{name}'")
             else:
                 print(f"  ✗ Failed to print sticker")
         else:
@@ -250,33 +162,6 @@ def main():
     print("Music Butler - QR Code Generator\n")
     print("="*50)
     
-    # Initialize Spotify client for fetching metadata (if available)
-    spotify_client = None
-    if SPOTIFY_AVAILABLE:
-        try:
-            from config import (
-                SPOTIPY_CLIENT_ID,
-                SPOTIPY_CLIENT_SECRET,
-                SPOTIPY_REDIRECT_URI
-            )
-            # Check if credentials are configured (not placeholders)
-            if (SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_ID != 'YOUR_CLIENT_ID_HERE' and
-                SPOTIPY_CLIENT_SECRET and SPOTIPY_CLIENT_SECRET != 'YOUR_CLIENT_SECRET_HERE'):
-                spotify_client = spotipy.Spotify(auth_manager=SpotifyOAuth(
-                    client_id=SPOTIPY_CLIENT_ID,
-                    client_secret=SPOTIPY_CLIENT_SECRET,
-                    redirect_uri=SPOTIPY_REDIRECT_URI,
-                    scope='playlist-read-private',
-                    cache_path='.spotify_cache'
-                ))
-        except (ImportError, AttributeError, KeyError) as e:
-            # Config missing or invalid - continue without Spotify metadata
-            spotify_client = None
-        except Exception as e:
-            # Authentication failed, network error, or any other error - continue without Spotify metadata
-            # This catches all spotipy exceptions (SpotifyOauthError, SpotifyException, etc.) and any other errors
-            spotify_client = None
-    
     # Initialize printer if requested
     printer = None
     if args.print:
@@ -299,7 +184,7 @@ def main():
         name = args.name if args.name else extract_title_from_uri(uri)
         
         print(f"Generating QR code for: {uri}\n")
-        filename, print_success = create_qr_code(name, uri, show=args.show, print_sticker=args.print, printer=printer, spotify_client=spotify_client)
+        filename, print_success = create_qr_code(name, uri, show=args.show, print_sticker=args.print, printer=printer)
         
         print("\n" + "="*50)
         print(f"✓ Done!")
@@ -344,7 +229,7 @@ def main():
     
     print_results = []
     for name, uri in playlists_to_generate.items():
-        filename, print_success = create_qr_code(name, uri, show=args.show, print_sticker=args.print, printer=printer, spotify_client=spotify_client)
+        filename, print_success = create_qr_code(name, uri, show=args.show, print_sticker=args.print, printer=printer)
         if args.print:
             print_results.append(print_success)
     
