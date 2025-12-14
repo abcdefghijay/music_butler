@@ -94,6 +94,54 @@ class StickerPrinter:
     """Handles QR code sticker printing on thermal printers"""
     
     @staticmethod
+    def _set_media_width(printer, width_pixels):
+        """
+        Set the media width in pixels for the printer profile.
+        This enables the center flag to work properly.
+        
+        Args:
+            printer: The escpos Usb printer object
+            width_pixels: Width in pixels (384 for 53mm thermal printer)
+        """
+        try:
+            if not hasattr(printer, 'profile') or not printer.profile:
+                return False
+            
+            if not hasattr(printer.profile, 'media'):
+                return False
+            
+            media = printer.profile.media
+            
+            # Try dictionary-style access first
+            if hasattr(media, '__setitem__') or isinstance(media, dict):
+                if 'width' not in media:
+                    media['width'] = {}
+                media['width']['pixel'] = width_pixels
+                return True
+            
+            # Try object-style access
+            if hasattr(media, 'width'):
+                if not hasattr(media.width, 'pixel'):
+                    # Create a simple object with pixel attribute
+                    class WidthObj:
+                        def __init__(self, pixel):
+                            self.pixel = pixel
+                    media.width = WidthObj(width_pixels)
+                else:
+                    media.width.pixel = width_pixels
+                return True
+            
+            # Try to create width attribute
+            class WidthObj:
+                def __init__(self, pixel):
+                    self.pixel = pixel
+            media.width = WidthObj(width_pixels)
+            return True
+            
+        except (AttributeError, TypeError, KeyError, Exception):
+            return False
+    
+    @staticmethod
     def _convert_id_to_int(id_value):
         """Convert printer ID to integer, handling both string and int formats"""
         if isinstance(id_value, int):
@@ -143,6 +191,8 @@ class StickerPrinter:
                 for profile in ['simple', 'default', 'POS-5890']:
                     try:
                         self.printer = Usb(self.vendor_id, self.product_id, profile=profile)
+                        # Set media width for centering (384 pixels for 53mm thermal printer)
+                        self._set_media_width(self.printer, 384)
                         self.enabled = True
                         self.profile = profile
                         print(f"✓ Sticker printer connected (profile: {profile})")
@@ -179,6 +229,8 @@ class StickerPrinter:
                             in_ep=in_ep,
                             out_ep=out_ep
                         )
+                        # Set media width for centering (384 pixels for 53mm thermal printer)
+                        self._set_media_width(self.printer, 384)
                         self.enabled = True
                         self.profile = None
                         self.endpoints = (out_ep, in_ep)
@@ -295,9 +347,9 @@ class StickerPrinter:
                 draw.text((x_pos, y_pos), artist_or_owner, fill=0, font=font_artist)
             
             # Print the sticker
-            # Don't use center=True since the profile doesn't have media.width.pixel set
-            # This avoids the warning and potential endpoint errors
-            self.printer.image(sticker, center=False)
+            # Set media width if not already set (for centering to work)
+            self._set_media_width(self.printer, sticker_width)
+            self.printer.image(sticker, center=True)
             self.printer.text("\n\n")
             self.printer.cut()
             
@@ -346,6 +398,8 @@ class StickerPrinter:
                                 in_ep=in_ep,
                                 out_ep=out_ep
                             )
+                            # Set media width for centering (384 pixels for 53mm thermal printer)
+                            self._set_media_width(self.printer, 384)
                             self.profile = None
                             self.endpoints = (out_ep, in_ep)
                             print(f"  → Reconnected with manual endpoints: out=0x{out_ep:02x}, in=0x{in_ep:02x}")
@@ -359,7 +413,9 @@ class StickerPrinter:
                     
                     # Retry printing after reconnection
                     print("  → Retrying print operation...")
-                    self.printer.image(sticker, center=False)
+                    # Set media width if not already set (for centering to work)
+                    self._set_media_width(self.printer, sticker_width)
+                    self.printer.image(sticker, center=True)
                     self.printer.text("\n\n")
                     self.printer.cut()
                     print(f"✓ Sticker printed successfully")
