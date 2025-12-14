@@ -134,28 +134,37 @@ class StickerPrinter:
             return
         
         try:
-            # Try multiple profile options for better compatibility
-            for profile in ['simple', 'default', 'POS-5890']:
-                try:
-                    self.printer = Usb(self.vendor_id, self.product_id, profile=profile)
-                    self.enabled = True
-                    self.profile = profile
-                    print(f"✓ Sticker printer connected (profile: {profile})")
-                    break
-                except Exception as profile_error:
-                    # Only show error if it's the last profile we're trying
-                    if profile == 'POS-5890':
+            # Jieli Technology printers (vendor 0x4c4a) often need manual endpoint configuration
+            # Try manual endpoints first for these printers
+            is_jieli_printer = (self.vendor_id == 0x4c4a)
+            
+            if not is_jieli_printer:
+                # Try multiple profile options for better compatibility
+                for profile in ['simple', 'default', 'POS-5890']:
+                    try:
+                        self.printer = Usb(self.vendor_id, self.product_id, profile=profile)
+                        self.enabled = True
+                        self.profile = profile
+                        print(f"✓ Sticker printer connected (profile: {profile})")
+                        break
+                    except Exception as profile_error:
+                        # Only show error if it's the last profile we're trying
+                        if profile == 'POS-5890':
+                            continue
                         continue
-                    continue
-                    
-            # If profiles failed, try manual endpoint configuration
+            
+            # If profiles failed (or Jieli printer), try manual endpoint configuration
             if not self.enabled:
-                print("  → Profiles failed, trying manual endpoint configuration...")
+                if is_jieli_printer:
+                    print("  → Using manual endpoint configuration for Jieli Technology printer...")
+                else:
+                    print("  → Profiles failed, trying manual endpoint configuration...")
                 # Common endpoint combinations for thermal printers
                 # Most printers use: out_ep=0x01 or 0x02, in_ep=0x81 or 0x82
+                # Jieli Technology printers typically use (0x02, 0x82)
                 endpoint_combos = [
-                    (0x01, 0x81),  # Most common
-                    (0x02, 0x82),
+                    (0x02, 0x82),  # Jieli Technology / Phomemo (most common for this vendor)
+                    (0x01, 0x81),  # Other common printers
                     (0x01, 0x82),
                     (0x02, 0x81),
                     (0x03, 0x83),
@@ -301,57 +310,40 @@ class StickerPrinter:
             elif "endpoint" in error_msg.lower() or "0x1" in error_msg or "invalid endpoint" in error_msg.lower():
                 print("  → USB endpoint error detected")
                 print("  → Attempting to reconnect with manual endpoint configuration...")
-                # Try to reinitialize printer connection with manual endpoints
+                # When endpoint errors occur, skip profiles and use manual endpoints directly
+                # Profiles are causing the endpoint issue, so we need explicit endpoint addresses
                 try:
                     # Common endpoint combinations for thermal printers
+                    # Jieli Technology printers typically use (0x02, 0x82)
                     endpoint_combos = [
-                        (0x01, 0x81),  # Most common
-                        (0x02, 0x82),
+                        (0x02, 0x82),  # Jieli Technology / Phomemo (most common for this vendor)
+                        (0x01, 0x81),  # Other common printers
                         (0x01, 0x82),
                         (0x02, 0x81),
                         (0x03, 0x83),
                     ]
                     
-                    # Also try profiles if we haven't already
-                    profiles_to_try = []
-                    if hasattr(self, 'profile') and self.profile:
-                        profiles_to_try = [self.profile]
-                    profiles_to_try.extend(['simple', 'default', 'POS-5890'])
-                    
                     reconnected = False
-                    # Try profiles first
-                    for profile in profiles_to_try:
+                    # Skip profiles - go straight to manual endpoints when endpoint error occurs
+                    for out_ep, in_ep in endpoint_combos:
                         try:
-                            self.printer = Usb(self.vendor_id, self.product_id, profile=profile)
-                            self.profile = profile
-                            self.endpoints = None
-                            print(f"  → Reconnected with profile: {profile}")
+                            self.printer = Usb(
+                                self.vendor_id, 
+                                self.product_id, 
+                                interface=0,
+                                in_ep=in_ep,
+                                out_ep=out_ep
+                            )
+                            self.profile = None
+                            self.endpoints = (out_ep, in_ep)
+                            print(f"  → Reconnected with manual endpoints: out=0x{out_ep:02x}, in=0x{in_ep:02x}")
                             reconnected = True
                             break
-                        except:
+                        except Exception as ep_error:
                             continue
                     
-                    # If profiles failed, try manual endpoints
                     if not reconnected:
-                        for out_ep, in_ep in endpoint_combos:
-                            try:
-                                self.printer = Usb(
-                                    self.vendor_id, 
-                                    self.product_id, 
-                                    interface=0,
-                                    in_ep=in_ep,
-                                    out_ep=out_ep
-                                )
-                                self.profile = None
-                                self.endpoints = (out_ep, in_ep)
-                                print(f"  → Reconnected with manual endpoints: out=0x{out_ep:02x}, in=0x{in_ep:02x}")
-                                reconnected = True
-                                break
-                            except:
-                                continue
-                    
-                    if not reconnected:
-                        raise Exception("Could not reconnect with any profile or endpoint combination")
+                        raise Exception("Could not reconnect with any endpoint combination")
                     
                     # Retry printing after reconnection
                     print("  → Retrying print operation...")
