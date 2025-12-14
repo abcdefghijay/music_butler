@@ -1078,14 +1078,20 @@ Skip if you don't have the Phomemo M02 printer.
 lsusb
 ```
 
-Look for "Phomemo", "ICS Advent", or similar.
+Look for "Phomemo", "ICS Advent", "Jieli Technology", or similar.
 
-Example output:
+Example outputs:
 ```
 Bus 001 Device 004: ID 0fe6:811e ICS Advent
 ```
+or
+```
+Bus 001 Device 003: ID 4c4a:4155 Jieli Technology USB Composite Device
+```
 
-Note: `0x0fe6` (vendor) and `0x811e` (product)
+**Note:** Some Phomemo printers use Jieli Technology chips internally, so they may appear as "Jieli Technology USB Composite Device" instead of "ICS Advent" or "Phomemo". This is normal - use the USB IDs shown.
+
+For the example above: `0x4c4a` (vendor) and `0x4155` (product)
 
 ### Set Permissions
 
@@ -1095,8 +1101,14 @@ sudo nano /etc/udev/rules.d/99-printer.rules
 
 Paste (replace with YOUR IDs):
 
+For ICS Advent device:
 ```
 SUBSYSTEM=="usb", ATTR{idVendor}=="0fe6", ATTR{idProduct}=="811e", MODE="0666"
+```
+
+For Jieli Technology device (like yours):
+```
+SUBSYSTEM=="usb", ATTR{idVendor}=="4c4a", ATTR{idProduct}=="4155", MODE="0666"
 ```
 
 **Save and reload:**
@@ -1111,21 +1123,28 @@ Unplug and replug printer.
 ### Configure Music Butler
 
 ```bash
-nano ~/music-butler/music_butler.py
+nano ~/music-butler/config.py
 ```
 
 Find:
 
 ```python
-PRINTER_VENDOR_ID = 0x0000
-PRINTER_PRODUCT_ID = 0x0000
+PRINTER_VENDOR_ID = 0x0000  # Replace with your printer's vendor ID (e.g., 0x0fe6)
+PRINTER_PRODUCT_ID = 0x0000  # Replace with your printer's product ID (e.g., 0x811e)
 ```
 
 Change to your IDs:
 
+For ICS Advent device:
 ```python
 PRINTER_VENDOR_ID = 0x0fe6
 PRINTER_PRODUCT_ID = 0x811e
+```
+
+For Jieli Technology device (like yours):
+```python
+PRINTER_VENDOR_ID = 0x4c4a
+PRINTER_PRODUCT_ID = 0x4155
 ```
 
 **Save:** `Ctrl+X` → `Y` → `Enter`

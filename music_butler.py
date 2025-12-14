@@ -352,10 +352,11 @@ class RotaryEncoderHandler:
 class MusicButler:
     """Main application class for QR code scanning and playback"""
     
-    def __init__(self, force_display=False, verbose=False, debug_mode=False):
+    def __init__(self, force_display=False, verbose=False, debug_mode=False, no_display=False):
         self._force_display = force_display
         self._verbose = verbose
         self._debug_mode = debug_mode
+        self._no_display = no_display
         print("\n" + "="*60)
         print("  MUSIC BUTLER - Initialization")
         print("="*60)
@@ -495,26 +496,47 @@ class MusicButler:
         # Check if display is available (for showing camera preview)
         self.display_available = False
         self.force_display = getattr(self, '_force_display', False)
+        no_display = getattr(self, '_no_display', False)
         
-        try:
-            # Check if DISPLAY environment variable is set (X11)
-            if 'DISPLAY' in os.environ:
-                # Try to create a test window to see if display works
-                test_img = np.zeros((100, 100, 3), dtype=np.uint8)
-                cv2.namedWindow('__test__', cv2.WINDOW_NORMAL)
-                cv2.imshow('__test__', test_img)
-                cv2.waitKey(1)
-                cv2.destroyWindow('__test__')
-                self.display_available = True
-            # Check if framebuffer exists (for direct framebuffer access)
-            elif os.path.exists('/dev/fb0'):
-                # Framebuffer available, but OpenCV might not work without X11
-                # We'll try anyway, but it may fail
-                self.display_available = False  # Conservative: assume no display
-        except Exception as e:
+        # Skip display test if --no-display flag is set
+        if no_display:
             self.display_available = False
-            if self.force_display:
-                print(f"⚠ Display test failed: {e}")
+        else:
+            try:
+                # Check if DISPLAY environment variable is set (X11)
+                if 'DISPLAY' in os.environ:
+                    display_val = os.environ.get('DISPLAY', '')
+                    # If DISPLAY contains localhost (from SSH X11 forwarding), it might not work
+                    # Skip the test to avoid OpenCV abort - these typically don't work without proper X11 setup
+                    if display_val.startswith('localhost:'):
+                        # This is likely from SSH X11 forwarding that's not working
+                        # Skip the test to avoid OpenCV abort
+                        if self._verbose:
+                            print(f"⚠ DISPLAY={display_val} appears to be from SSH X11 forwarding (skipping display test)")
+                        self.display_available = False
+                    else:
+                        # Try to create a test window to see if display works
+                        try:
+                            test_img = np.zeros((100, 100, 3), dtype=np.uint8)
+                            cv2.namedWindow('__test__', cv2.WINDOW_NORMAL)
+                            cv2.imshow('__test__', test_img)
+                            cv2.waitKey(1)
+                            cv2.destroyWindow('__test__')
+                            self.display_available = True
+                        except (cv2.error, SystemError, OSError, Exception) as e:
+                            # OpenCV GUI failed - likely no valid display
+                            self.display_available = False
+                            if self._verbose:
+                                print(f"⚠ Display test failed (DISPLAY={display_val}): {e}")
+                # Check if framebuffer exists (for direct framebuffer access)
+                elif os.path.exists('/dev/fb0'):
+                    # Framebuffer available, but OpenCV might not work without X11
+                    # We'll try anyway, but it may fail
+                    self.display_available = False  # Conservative: assume no display
+            except Exception as e:
+                self.display_available = False
+                if self.force_display:
+                    print(f"⚠ Display test failed: {e}")
         
         if not self.display_available:
             print("⚠ Display not available - running in headless mode")
@@ -1128,10 +1150,10 @@ Examples:
         butler = MusicButler(
             force_display=force_display,
             verbose=args.verbose,
-            debug_mode=args.debug_mode
+            debug_mode=args.debug_mode,
+            no_display=no_display
         )
         if no_display:
-            butler.display_available = False
             print("→ Running in headless mode (--no-display flag)")
         if args.verbose:
             print("→ Verbose mode enabled - showing all QR detection attempts")
