@@ -656,28 +656,22 @@ class MusicButler:
                 # Check if DISPLAY environment variable is set (X11)
                 if 'DISPLAY' in os.environ:
                     display_val = os.environ.get('DISPLAY', '')
-                    # If DISPLAY contains localhost (from SSH X11 forwarding), it might not work
-                    # Skip the test to avoid OpenCV abort - these typically don't work without proper X11 setup
-                    if display_val.startswith('localhost:'):
-                        # This is likely from SSH X11 forwarding that's not working
-                        # Skip the test to avoid OpenCV abort
+                    # Try to create a test window to see if display works
+                    # This works for both local displays (e.g., :0) and SSH X11 forwarding (e.g., localhost:10.0)
+                    try:
+                        test_img = np.zeros((100, 100, 3), dtype=np.uint8)
+                        cv2.namedWindow('__test__', cv2.WINDOW_NORMAL)
+                        cv2.imshow('__test__', test_img)
+                        cv2.waitKey(1)
+                        cv2.destroyWindow('__test__')
+                        self.display_available = True
                         if self._verbose:
-                            print(f"⚠ DISPLAY={display_val} appears to be from SSH X11 forwarding (skipping display test)")
+                            print(f"✓ Display test passed (DISPLAY={display_val})")
+                    except (cv2.error, SystemError, OSError, Exception) as e:
+                        # OpenCV GUI failed - likely no valid display
                         self.display_available = False
-                    else:
-                        # Try to create a test window to see if display works
-                        try:
-                            test_img = np.zeros((100, 100, 3), dtype=np.uint8)
-                            cv2.namedWindow('__test__', cv2.WINDOW_NORMAL)
-                            cv2.imshow('__test__', test_img)
-                            cv2.waitKey(1)
-                            cv2.destroyWindow('__test__')
-                            self.display_available = True
-                        except (cv2.error, SystemError, OSError, Exception) as e:
-                            # OpenCV GUI failed - likely no valid display
-                            self.display_available = False
-                            if self._verbose:
-                                print(f"⚠ Display test failed (DISPLAY={display_val}): {e}")
+                        if self._verbose:
+                            print(f"⚠ Display test failed (DISPLAY={display_val}): {e}")
                 # Check if framebuffer exists (for direct framebuffer access)
                 elif os.path.exists('/dev/fb0'):
                     # Framebuffer available, but OpenCV might not work without X11
