@@ -148,12 +148,45 @@ class StickerPrinter:
                         continue
                     continue
                     
+            # If profiles failed, try manual endpoint configuration
             if not self.enabled:
-                raise Exception("Could not connect with any profile")
+                print("  → Profiles failed, trying manual endpoint configuration...")
+                # Common endpoint combinations for thermal printers
+                # Most printers use: out_ep=0x01 or 0x02, in_ep=0x81 or 0x82
+                endpoint_combos = [
+                    (0x01, 0x81),  # Most common
+                    (0x02, 0x82),
+                    (0x01, 0x82),
+                    (0x02, 0x81),
+                    (0x03, 0x83),
+                ]
+                
+                for out_ep, in_ep in endpoint_combos:
+                    try:
+                        self.printer = Usb(
+                            self.vendor_id, 
+                            self.product_id, 
+                            interface=0,
+                            in_ep=in_ep,
+                            out_ep=out_ep
+                        )
+                        self.enabled = True
+                        self.profile = None
+                        self.endpoints = (out_ep, in_ep)
+                        print(f"✓ Sticker printer connected (manual endpoints: out=0x{out_ep:02x}, in=0x{in_ep:02x})")
+                        break
+                    except Exception as ep_error:
+                        continue
+                
+                if not self.enabled:
+                    raise Exception("Could not connect with any profile or endpoint combination")
                 
         except Exception as e:
             print(f"⚠ Printer not available: {e}")
             print("  Printing disabled - scanner will still work")
+            print("\n  To find correct endpoints, run:")
+            print(f"    lsusb -vvv -d {hex(self.vendor_id)}:{hex(self.product_id)} | grep bEndpointAddress")
+            print("  Look for lines with 'OUT' and 'IN' to find out_ep and in_ep values")
     
     def print_qr_sticker(self, spotify_uri, title, artist_or_owner=""):
         """
@@ -267,29 +300,76 @@ class StickerPrinter:
                 print("     6. Verify the printer is powered on")
             elif "endpoint" in error_msg.lower() or "0x1" in error_msg or "invalid endpoint" in error_msg.lower():
                 print("  → USB endpoint error detected")
-                print("  → Troubleshooting steps:")
-                print("     1. Unplug and replug the printer USB cable")
-                print("     2. Check USB connection: lsusb | grep -i 'your_printer_vendor'")
-                print("     3. Verify printer IDs in config.py match lsusb output")
-                print("     4. Try a different USB port")
-                print("     5. Check if printer needs drivers: dmesg | tail -20")
-                # Try to reinitialize printer connection
+                print("  → Attempting to reconnect with manual endpoint configuration...")
+                # Try to reinitialize printer connection with manual endpoints
                 try:
-                    print("  → Attempting to reconnect printer...")
-                    # Try the same profile first, then others
-                    profiles_to_try = [self.profile] if hasattr(self, 'profile') else ['simple', 'default', 'POS-5890']
+                    # Common endpoint combinations for thermal printers
+                    endpoint_combos = [
+                        (0x01, 0x81),  # Most common
+                        (0x02, 0x82),
+                        (0x01, 0x82),
+                        (0x02, 0x81),
+                        (0x03, 0x83),
+                    ]
+                    
+                    # Also try profiles if we haven't already
+                    profiles_to_try = []
+                    if hasattr(self, 'profile') and self.profile:
+                        profiles_to_try = [self.profile]
+                    profiles_to_try.extend(['simple', 'default', 'POS-5890'])
+                    
+                    reconnected = False
+                    # Try profiles first
                     for profile in profiles_to_try:
                         try:
                             self.printer = Usb(self.vendor_id, self.product_id, profile=profile)
                             self.profile = profile
+                            self.endpoints = None
                             print(f"  → Reconnected with profile: {profile}")
+                            reconnected = True
                             break
                         except:
                             continue
-                    else:
-                        raise Exception("Could not reconnect with any profile")
+                    
+                    # If profiles failed, try manual endpoints
+                    if not reconnected:
+                        for out_ep, in_ep in endpoint_combos:
+                            try:
+                                self.printer = Usb(
+                                    self.vendor_id, 
+                                    self.product_id, 
+                                    interface=0,
+                                    in_ep=in_ep,
+                                    out_ep=out_ep
+                                )
+                                self.profile = None
+                                self.endpoints = (out_ep, in_ep)
+                                print(f"  → Reconnected with manual endpoints: out=0x{out_ep:02x}, in=0x{in_ep:02x}")
+                                reconnected = True
+                                break
+                            except:
+                                continue
+                    
+                    if not reconnected:
+                        raise Exception("Could not reconnect with any profile or endpoint combination")
+                    
+                    # Retry printing after reconnection
+                    print("  → Retrying print operation...")
+                    self.printer.image(sticker, center=False)
+                    self.printer.text("\n\n")
+                    self.printer.cut()
+                    print(f"✓ Sticker printed successfully")
+                    return True
+                    
                 except Exception as reconnect_error:
                     print(f"  → Reconnection failed: {reconnect_error}")
+                    print("  → Troubleshooting steps:")
+                    print("     1. Find correct endpoints:")
+                    print(f"        lsusb -vvv -d {hex(self.vendor_id)}:{hex(self.product_id)} | grep bEndpointAddress")
+                    print("        Look for lines with 'OUT' (out_ep) and 'IN' (in_ep)")
+                    print("     2. Unplug and replug the printer USB cable")
+                    print("     3. Try a different USB port")
+                    print("     4. Check if printer needs drivers: dmesg | tail -20")
             elif "permission" in error_msg.lower() or "access" in error_msg.lower():
                 print("  → Permission error - try:")
                 print("     1. Add user to printer group: sudo usermod -a -G lp pi")
