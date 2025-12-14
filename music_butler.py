@@ -391,6 +391,55 @@ class StickerPrinter:
             # Some printers don't need initialization
             pass
     
+    def _send_raw_command(self, command_bytes):
+        """Send raw bytes directly to printer, trying multiple methods"""
+        methods = [
+            lambda: self.printer._raw(command_bytes) if hasattr(self.printer, '_raw') else None,
+            lambda: self.printer.device.write(command_bytes) if hasattr(self.printer, 'device') and hasattr(self.printer.device, 'write') else None,
+            lambda: self.printer.hw.write(command_bytes) if hasattr(self.printer, 'hw') and hasattr(self.printer.hw, 'write') else None,
+        ]
+        
+        for method in methods:
+            try:
+                result = method()
+                if result is not None:
+                    return True
+            except Exception as e:
+                continue
+        return False
+    
+    def _check_printer_access(self):
+        """Check if we can access the printer device"""
+        print("  → Checking printer access...")
+        try:
+            # Try to access the device
+            if hasattr(self.printer, 'device'):
+                print(f"    ✓ Device object exists: {type(self.printer.device)}")
+                if hasattr(self.printer.device, 'write'):
+                    print("    ✓ Device has write() method")
+                else:
+                    print("    ✗ Device does not have write() method")
+            elif hasattr(self.printer, '_raw'):
+                print(f"    ✓ _raw object exists: {type(self.printer._raw)}")
+            else:
+                print("    ⚠ Cannot find device or _raw object")
+            
+            # Check USB permissions
+            import subprocess
+            result = subprocess.run(['lsusb', '-d', f'{self.vendor_id:04x}:{self.product_id:04x}'], 
+                                  capture_output=True, text=True)
+            if result.returncode == 0:
+                print(f"    ✓ Printer found in USB device list")
+                print(f"    → {result.stdout.strip()}")
+            else:
+                print(f"    ✗ Printer not found in USB device list")
+                print(f"    → Run: lsusb | grep -i '{self.vendor_id:04x}'")
+            
+            return True
+        except Exception as e:
+            print(f"    ✗ Error checking access: {e}")
+            return False
+    
     def test_print(self):
         """
         Test print - prints a simple test pattern to verify printer is working
@@ -406,82 +455,116 @@ class StickerPrinter:
             print("🖨 Testing printer with simple text...")
             print(f"  → Printer: vendor=0x{self.vendor_id:04x}, product=0x{self.product_id:04x}")
             
+            # Check printer access first
+            self._check_printer_access()
+            print()
+            
+            # Method 1: Try raw ESC/POS commands directly
+            print("\n  → Method 1: Sending raw ESC/POS commands...")
+            try:
+                # ESC @ - Initialize printer
+                if self._send_raw_command(b'\x1b\x40'):
+                    print("    ✓ Sent ESC @ (initialize)")
+                time.sleep(0.2)
+                
+                # Send text directly as raw bytes
+                test_text = b"RAW TEST PRINT\nIf you see this, raw mode works!\n\n"
+                if self._send_raw_command(test_text):
+                    print("    ✓ Sent raw text")
+                time.sleep(0.1)
+                
+                # Line feed
+                if self._send_raw_command(b'\n'):
+                    print("    ✓ Sent line feed")
+                time.sleep(0.1)
+                
+                # Cut command (GS V 0) - partial cut
+                cut_cmd = b'\x1d\x56\x00'  # GS V 0
+                if self._send_raw_command(cut_cmd):
+                    print("    ✓ Sent cut command")
+                time.sleep(0.2)
+                
+                # Close and flush
+                print("    → Closing connection...")
+                if hasattr(self.printer, 'close'):
+                    self.printer.close()
+                time.sleep(1.0)
+                
+                print("    → Check if anything printed from raw commands")
+                print("    → If yes, raw mode works. If no, trying method 2...")
+                time.sleep(2.0)  # Give printer time
+                
+            except Exception as e:
+                print(f"    ✗ Raw command method failed: {e}")
+            
+            # Reconnect for method 2
+            self._reconnect_printer()
+            time.sleep(0.5)
+            
+            # Method 2: Try python-escpos high-level methods
+            print("\n  → Method 2: Using python-escpos methods...")
+            
             # Initialize/wake up printer
-            print("  → Initializing printer...")
+            print("    → Initializing printer...")
             self._initialize_printer()
+            time.sleep(0.2)
             
             # Try a simple text print first
-            print("  → Sending text commands...")
-            self.printer.text("TEST PRINT\n")
-            self.printer.text("If you see this, printer is working!\n")
+            print("    → Sending text commands...")
+            self.printer.text("ESC/POS TEST PRINT\n")
+            self.printer.text("If you see this, escpos methods work!\n")
             self.printer.text("\n")
+            time.sleep(0.1)
             
             # Send form feed to ensure printing starts
             try:
                 self.printer.control("LF")  # Line feed
                 self.printer.control("FF")  # Form feed
-            except:
+                print("    ✓ Sent form feed")
+            except Exception as e:
+                print(f"    ⚠ Form feed failed: {e}")
                 # If control() doesn't work, try raw commands
                 try:
                     if hasattr(self.printer, '_raw'):
                         self.printer._raw(b'\n\n\n')  # Multiple line feeds
+                        print("    ✓ Sent raw line feeds")
                 except:
                     pass
             
-            print("  → Sending cut command...")
+            print("    → Sending cut command...")
             self.printer.cut()
             
             # CRITICAL: Close the connection to flush buffer
             # python-escpos buffers commands until connection is closed
-            print("  → Closing connection to flush buffer...")
+            print("    → Closing connection to flush buffer...")
             connection_closed = False
             try:
                 if hasattr(self.printer, 'close'):
                     self.printer.close()
                     connection_closed = True
-                    print("  ✓ Connection closed via close() method")
+                    print("    ✓ Connection closed via close() method")
                 elif hasattr(self.printer, '_raw') and hasattr(self.printer._raw, 'close'):
                     self.printer._raw.close()
                     connection_closed = True
-                    print("  ✓ Connection closed via _raw.close() method")
+                    print("    ✓ Connection closed via _raw.close() method")
                 elif hasattr(self.printer, 'device') and hasattr(self.printer.device, 'close'):
                     self.printer.device.close()
                     connection_closed = True
-                    print("  ✓ Connection closed via device.close() method")
-                else:
-                    print("  ⚠ No close() method found - trying alternative methods...")
-                    # Try to find and close the underlying USB device
-                    if hasattr(self.printer, 'hw'):
-                        if hasattr(self.printer.hw, 'close'):
-                            self.printer.hw.close()
-                            connection_closed = True
-                            print("  ✓ Connection closed via hw.close() method")
+                    print("    ✓ Connection closed via device.close() method")
             except Exception as close_error:
-                print(f"  ⚠ Could not close connection: {close_error}")
-                import traceback
-                traceback.print_exc()
-            
-            if not connection_closed:
-                print("  ⚠ WARNING: Could not close printer connection!")
-                print("  → Commands may be buffered and not sent to printer")
-                print("  → Try unplugging and replugging the printer USB cable")
+                print(f"    ⚠ Could not close connection: {close_error}")
             
             # Give printer time to process after closing
-            print("  → Waiting for printer to process commands...")
-            time.sleep(0.5)  # Longer delay to give printer time
+            print("    → Waiting for printer to process commands...")
+            time.sleep(2.0)  # Longer delay to give printer time
             
-            # Reconnect for next use
-            if connection_closed:
-                print("  → Reconnecting printer...")
-                self._reconnect_printer()
-            
-            print("\n✓ Test print commands sent")
+            print("\n✓ Test print commands sent (both methods)")
             print("  → Check if anything printed from the printer")
-            print("  → If nothing printed, try:")
-            print("     1. Unplug and replug the USB cable")
-            print("     2. Press the power button on the printer")
-            print("     3. Check that paper is loaded correctly")
-            print("     4. Verify printer is powered on (LED should be on)")
+            print("  → If nothing printed, the printer may need:")
+            print("     1. Different USB cable or port")
+            print("     2. Driver installation")
+            print("     3. Different command format")
+            print("     4. Check printer manual for ESC/POS compatibility")
             return True
             
         except Exception as e:

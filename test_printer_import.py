@@ -54,3 +54,4 @@ except Exception as e:
 print("\n✓ All tests passed! StickerPrinter is working.")
 print("\nYou can now run:")
 print("  python3 -c \"from music_butler import StickerPrinter; import config; p=StickerPrinter(config.PRINTER_VENDOR_ID, config.PRINTER_PRODUCT_ID); p.test_print()\"")
+
