@@ -102,43 +102,64 @@ class StickerPrinter:
         Args:
             printer: The escpos Usb printer object
             width_pixels: Width in pixels (384 for 53mm thermal printer)
+        
+        Returns:
+            bool: True if successfully set, False otherwise
         """
         try:
-            if not hasattr(printer, 'profile') or not printer.profile:
-                return False
-            
-            if not hasattr(printer.profile, 'media'):
-                return False
-            
-            media = printer.profile.media
-            
-            # Try dictionary-style access first
-            if hasattr(media, '__setitem__') or isinstance(media, dict):
-                if 'width' not in media:
-                    media['width'] = {}
-                media['width']['pixel'] = width_pixels
-                return True
-            
-            # Try object-style access
-            if hasattr(media, 'width'):
-                if not hasattr(media.width, 'pixel'):
-                    # Create a simple object with pixel attribute
+            # First, try to set via profile if it exists
+            if hasattr(printer, 'profile') and printer.profile:
+                if hasattr(printer.profile, 'media'):
+                    media = printer.profile.media
+                    
+                    # Try dictionary-style access first
+                    if hasattr(media, '__setitem__') or isinstance(media, dict):
+                        if 'width' not in media:
+                            media['width'] = {}
+                        media['width']['pixel'] = width_pixels
+                        return True
+                    
+                    # Try object-style access
+                    if hasattr(media, 'width'):
+                        if not hasattr(media.width, 'pixel'):
+                            # Create a simple object with pixel attribute
+                            class WidthObj:
+                                def __init__(self, pixel):
+                                    self.pixel = pixel
+                            media.width = WidthObj(width_pixels)
+                        else:
+                            media.width.pixel = width_pixels
+                        return True
+                    
+                    # Try to create width attribute
                     class WidthObj:
                         def __init__(self, pixel):
                             self.pixel = pixel
                     media.width = WidthObj(width_pixels)
-                else:
-                    media.width.pixel = width_pixels
+                    return True
+            
+            # If no profile, try to create a minimal profile structure
+            # This is needed for printers using manual endpoints
+            if not hasattr(printer, 'profile') or not printer.profile:
+                # Create a simple profile-like structure
+                class SimpleMedia:
+                    class WidthObj:
+                        def __init__(self, pixel):
+                            self.pixel = pixel
+                    def __init__(self, width_pixels):
+                        self.width = self.WidthObj(width_pixels)
+                
+                class SimpleProfile:
+                    def __init__(self, width_pixels):
+                        self.media = SimpleMedia(width_pixels)
+                
+                printer.profile = SimpleProfile(width_pixels)
                 return True
             
-            # Try to create width attribute
-            class WidthObj:
-                def __init__(self, pixel):
-                    self.pixel = pixel
-            media.width = WidthObj(width_pixels)
-            return True
+            return False
             
-        except (AttributeError, TypeError, KeyError, Exception):
+        except (AttributeError, TypeError, KeyError, Exception) as e:
+            # Silently fail - the warning will come from escpos library
             return False
     
     @staticmethod
@@ -318,26 +339,53 @@ class StickerPrinter:
         try:
             # ESC @ - Initialize printer (resets printer to default state)
             # This is a standard ESC/POS command that wakes up the printer
+            init_sent = False
+            
             if hasattr(self.printer, '_raw'):
-                self.printer._raw(b'\x1b\x40')  # ESC @
-            elif hasattr(self.printer, 'device'):
-                self.printer.device.write(b'\x1b\x40')
+                try:
+                    self.printer._raw(b'\x1b\x40')  # ESC @
+                    init_sent = True
+                except:
+                    pass
+            elif hasattr(self.printer, 'device') and hasattr(self.printer.device, 'write'):
+                try:
+                    self.printer.device.write(b'\x1b\x40')
+                    init_sent = True
+                except:
+                    pass
             elif hasattr(self.printer, 'hw') and hasattr(self.printer.hw, 'write'):
-                self.printer.hw.write(b'\x1b\x40')
+                try:
+                    self.printer.hw.write(b'\x1b\x40')
+                    init_sent = True
+                except:
+                    pass
             
             # Small delay to let printer process
-            time.sleep(0.05)
+            if init_sent:
+                time.sleep(0.15)
             
             # Some printers need a line feed or text command to wake up
-            try:
-                # Send a line feed to wake the printer
-                if hasattr(self.printer, 'control'):
-                    self.printer.control("LF")
-                elif hasattr(self.printer, '_raw'):
-                    self.printer._raw(b'\n')
-            except:
-                pass
-                
+            # Try multiple wake-up methods
+            wake_methods = [
+                # Method 1: Use control() if available
+                lambda: self.printer.control("LF") if hasattr(self.printer, 'control') else None,
+                # Method 2: Use _raw with line feed
+                lambda: self.printer._raw(b'\n') if hasattr(self.printer, '_raw') else None,
+                # Method 3: Use text() method
+                lambda: self.printer.text('\n') if hasattr(self.printer, 'text') else None,
+                # Method 4: Direct device write
+                lambda: self.printer.device.write(b'\n') if hasattr(self.printer, 'device') and hasattr(self.printer.device, 'write') else None,
+            ]
+            
+            for method in wake_methods:
+                try:
+                    result = method()
+                    if result is not None:
+                        time.sleep(0.1)
+                        break
+                except:
+                    continue
+                    
         except Exception as e:
             # Non-critical - continue even if init fails
             # Some printers don't need initialization
@@ -487,8 +535,13 @@ class StickerPrinter:
             text_height = 100   # Space for title/artist below QR code
             sticker_height = header_height + qr_size + text_height
             
-            # Create white background
+            # Create white background (mode '1' = 1-bit pixels, black and white)
+            # Thermal printers work best with 1-bit images
             sticker = Image.new('1', (sticker_width, sticker_height), 1)
+            
+            # Ensure QR code is in the right format (1-bit)
+            if qr_img.mode != '1':
+                qr_img = qr_img.convert('1')
             
             # Add text
             draw = ImageDraw.Draw(sticker)
@@ -544,14 +597,59 @@ class StickerPrinter:
             
             # Print the sticker
             # Set media width if not already set (for centering to work)
-            self._set_media_width(self.printer, sticker_width)
+            media_width_set = self._set_media_width(self.printer, sticker_width)
+            if not media_width_set:
+                print("  ⚠ Warning: Could not set media width - centering may not work")
             
-            # Send image to printer
-            try:
-                self.printer.image(sticker, center=True)
-            except Exception as img_error:
-                print(f"  ✗ Error sending image to printer: {img_error}")
-                raise
+            # Try multiple methods to send image to printer
+            image_sent = False
+            img_error = None
+            
+            # Method 1: Try with center flag (if media width was set)
+            if media_width_set:
+                try:
+                    self.printer.image(sticker, center=True)
+                    image_sent = True
+                except Exception as e:
+                    img_error = e
+                    print(f"  ⚠ Warning: Failed to print with center flag: {e}")
+            
+            # Method 2: Try without center flag (manual centering)
+            if not image_sent:
+                try:
+                    # Calculate manual centering offset
+                    # Most thermal printers are 384 pixels wide
+                    img_width = sticker.width
+                    if img_width < sticker_width:
+                        # Center the image manually by adding padding
+                        padding_left = (sticker_width - img_width) // 2
+                        # Create a new image with padding
+                        centered_sticker = Image.new('1', (sticker_width, sticker.height), 1)
+                        centered_sticker.paste(sticker, (padding_left, 0))
+                        sticker = centered_sticker
+                    
+                    self.printer.image(sticker, center=False)
+                    image_sent = True
+                except Exception as e:
+                    img_error = e
+                    print(f"  ⚠ Warning: Failed to print without center flag: {e}")
+            
+            # Method 3: Try with different image format (convert to RGB if needed)
+            if not image_sent:
+                try:
+                    # Some printers need RGB mode instead of '1' (1-bit)
+                    if sticker.mode == '1':
+                        sticker_rgb = sticker.convert('RGB')
+                        self.printer.image(sticker_rgb, center=False)
+                    else:
+                        self.printer.image(sticker, center=False)
+                    image_sent = True
+                except Exception as e:
+                    img_error = e
+                    print(f"  ⚠ Warning: Failed to print with RGB conversion: {e}")
+            
+            if not image_sent:
+                raise Exception(f"Could not send image to printer. Last error: {img_error}")
             
             # Feed some blank lines before cutting
             try:
@@ -565,9 +663,25 @@ class StickerPrinter:
             except Exception as cut_error:
                 print(f"  ⚠ Warning: Error sending cut command: {cut_error}")
             
-            # CRITICAL: Close the connection to flush the buffer
+            # CRITICAL: Flush and close the connection to ensure commands are sent
             # python-escpos buffers commands and they are NOT sent until connection is closed
             # This is the most reliable way to ensure commands are actually sent to the printer
+            
+            # First, try to flush any buffered data
+            try:
+                if hasattr(self.printer, 'flush'):
+                    self.printer.flush()
+                elif hasattr(self.printer, '_raw') and hasattr(self.printer._raw, 'flush'):
+                    self.printer._raw.flush()
+                elif hasattr(self.printer, 'device') and hasattr(self.printer.device, 'flush'):
+                    self.printer.device.flush()
+            except:
+                pass  # Flush is optional, continue with close
+            
+            # Small delay to let flush complete
+            time.sleep(0.1)
+            
+            # Now close the connection to force sending
             connection_closed = False
             try:
                 if hasattr(self.printer, 'close'):
@@ -583,7 +697,8 @@ class StickerPrinter:
                 print(f"  ⚠ Warning: Could not close printer connection: {close_error}")
             
             # Give printer time to process the commands after closing
-            time.sleep(0.2)
+            # Longer delay to ensure printer has time to print
+            time.sleep(0.5)
             
             # Reconnect for next print operation
             if connection_closed:
