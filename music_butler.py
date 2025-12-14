@@ -37,6 +37,14 @@ except ImportError:
     ESCPOS_AVAILABLE = False
     print("⚠ python-escpos not installed. Printing will be disabled.")
 
+# Try to import USB library for direct access
+try:
+    import usb.core
+    import usb.util
+    USB_CORE_AVAILABLE = True
+except ImportError:
+    USB_CORE_AVAILABLE = False
+
 # Try to import rotary encoder library (optional)
 try:
     from adafruit_seesaw.seesaw import Seesaw
@@ -250,6 +258,30 @@ class StickerPrinter:
                             in_ep=in_ep,
                             out_ep=out_ep
                         )
+                        
+                        # CRITICAL: For USB Composite Devices, we may need to explicitly
+                        # claim the interface and detach kernel driver
+                        try:
+                            if hasattr(self.printer, 'device') and hasattr(self.printer.device, 'is_kernel_driver_active'):
+                                # Check if kernel driver is active
+                                for cfg in self.printer.device:
+                                    for intf in cfg:
+                                        if self.printer.device.is_kernel_driver_active(intf.bInterfaceNumber):
+                                            try:
+                                                self.printer.device.detach_kernel_driver(intf.bInterfaceNumber)
+                                                print(f"  → Detached kernel driver from interface {intf.bInterfaceNumber}")
+                                            except:
+                                                pass
+                                        try:
+                                            self.printer.device.set_configuration(cfg)
+                                            self.printer.device.claim_interface(intf.bInterfaceNumber)
+                                            print(f"  → Claimed interface {intf.bInterfaceNumber}")
+                                        except:
+                                            pass
+                        except Exception as intf_error:
+                            # Interface claiming is optional - continue if it fails
+                            pass
+                        
                         # Set media width for centering (384 pixels for 53mm thermal printer)
                         self._set_media_width(self.printer, 384)
                         self.enabled = True
@@ -393,6 +425,29 @@ class StickerPrinter:
     
     def _send_raw_command(self, command_bytes):
         """Send raw bytes directly to printer, trying multiple methods"""
+        # Try to get the actual endpoint for direct writing
+        try:
+            if hasattr(self.printer, 'device'):
+                # Find the bulk OUT endpoint
+                cfg = self.printer.device.get_active_configuration()
+                intf = cfg[(0, 0)]  # Interface 0, alternate setting 0
+                
+                # Find bulk OUT endpoint
+                ep_out = None
+                for ep in intf:
+                    if (ep.bmAttributes & 0x02) == 0x02 and (ep.bEndpointAddress & 0x80) == 0:
+                        ep_out = ep
+                        break
+                
+                if ep_out:
+                    # Write directly to endpoint
+                    bytes_written = self.printer.device.write(ep_out.bEndpointAddress, command_bytes, timeout=1000)
+                    if bytes_written == len(command_bytes):
+                        return True
+        except Exception as e:
+            pass
+        
+        # Fallback to python-escpos methods
         methods = [
             lambda: self.printer._raw(command_bytes) if hasattr(self.printer, '_raw') else None,
             lambda: self.printer.device.write(command_bytes) if hasattr(self.printer, 'device') and hasattr(self.printer.device, 'write') else None,
@@ -462,40 +517,91 @@ class StickerPrinter:
             # Method 1: Try raw ESC/POS commands directly
             print("\n  → Method 1: Sending raw ESC/POS commands...")
             try:
-                # ESC @ - Initialize printer
-                if self._send_raw_command(b'\x1b\x40'):
-                    print("    ✓ Sent ESC @ (initialize)")
-                time.sleep(0.2)
+                if not USB_CORE_AVAILABLE:
+                    print("    ⚠ usb.core not available, skipping direct USB method")
+                else:
+                    # Try to write directly to USB endpoint
                 
-                # Send text directly as raw bytes
-                test_text = b"RAW TEST PRINT\nIf you see this, raw mode works!\n\n"
-                if self._send_raw_command(test_text):
-                    print("    ✓ Sent raw text")
-                time.sleep(0.1)
-                
-                # Line feed
-                if self._send_raw_command(b'\n'):
-                    print("    ✓ Sent line feed")
-                time.sleep(0.1)
-                
-                # Cut command (GS V 0) - partial cut
-                cut_cmd = b'\x1d\x56\x00'  # GS V 0
-                if self._send_raw_command(cut_cmd):
-                    print("    ✓ Sent cut command")
-                time.sleep(0.2)
-                
-                # Close and flush
-                print("    → Closing connection...")
-                if hasattr(self.printer, 'close'):
-                    self.printer.close()
-                time.sleep(1.0)
-                
-                print("    → Check if anything printed from raw commands")
-                print("    → If yes, raw mode works. If no, trying method 2...")
-                time.sleep(2.0)  # Give printer time
+                # Get the device directly
+                dev = usb.core.find(idVendor=self.vendor_id, idProduct=self.product_id)
+                if dev is None:
+                    print("    ✗ Could not find USB device")
+                else:
+                    print(f"    ✓ Found USB device: {dev}")
+                    
+                    # Set configuration
+                    try:
+                        dev.set_configuration()
+                        print("    ✓ Set USB configuration")
+                    except Exception as e:
+                        print(f"    ⚠ Configuration error (may be OK): {e}")
+                    
+                    # Find and claim interface
+                    cfg = dev.get_active_configuration()
+                    intf = cfg[(0, 0)]
+                    
+                    # Detach kernel driver if needed
+                    try:
+                        if dev.is_kernel_driver_active(intf.bInterfaceNumber):
+                            dev.detach_kernel_driver(intf.bInterfaceNumber)
+                            print(f"    ✓ Detached kernel driver from interface {intf.bInterfaceNumber}")
+                    except:
+                        pass
+                    
+                    # Claim interface
+                    try:
+                        usb.util.claim_interface(dev, intf.bInterfaceNumber)
+                        print(f"    ✓ Claimed interface {intf.bInterfaceNumber}")
+                    except Exception as e:
+                        print(f"    ⚠ Interface claim error (may be OK): {e}")
+                    
+                    # Find bulk OUT endpoint (0x02)
+                    ep_out = None
+                    for ep in intf:
+                        if (ep.bmAttributes & 0x02) == 0x02:  # Bulk transfer
+                            addr = ep.bEndpointAddress
+                            if (addr & 0x80) == 0:  # OUT endpoint
+                                ep_out = ep
+                                print(f"    ✓ Found OUT endpoint: 0x{addr:02x}")
+                                break
+                    
+                    if ep_out:
+                        # Send commands directly
+                        print("    → Sending ESC @ (initialize)...")
+                        bytes_written = dev.write(ep_out.bEndpointAddress, b'\x1b\x40', timeout=1000)
+                        print(f"    ✓ Wrote {bytes_written} bytes (ESC @)")
+                        time.sleep(0.2)
+                        
+                        # Send test text
+                        test_text = b"DIRECT USB TEST\nIf you see this, direct USB works!\n\n"
+                        print("    → Sending test text...")
+                        bytes_written = dev.write(ep_out.bEndpointAddress, test_text, timeout=1000)
+                        print(f"    ✓ Wrote {bytes_written} bytes (text)")
+                        time.sleep(0.2)
+                        
+                        # Send cut command
+                        cut_cmd = b'\x1d\x56\x00'  # GS V 0 (partial cut)
+                        print("    → Sending cut command...")
+                        bytes_written = dev.write(ep_out.bEndpointAddress, cut_cmd, timeout=1000)
+                        print(f"    ✓ Wrote {bytes_written} bytes (cut)")
+                        time.sleep(0.5)
+                        
+                        # Release interface
+                        try:
+                            usb.util.release_interface(dev, intf.bInterfaceNumber)
+                            print("    ✓ Released interface")
+                        except:
+                            pass
+                        
+                        print("    → Check if anything printed from direct USB commands")
+                        time.sleep(2.0)  # Give printer time
+                    else:
+                        print("    ✗ Could not find OUT endpoint")
                 
             except Exception as e:
-                print(f"    ✗ Raw command method failed: {e}")
+                print(f"    ✗ Direct USB method failed: {e}")
+                import traceback
+                traceback.print_exc()
             
             # Reconnect for method 2
             self._reconnect_printer()
