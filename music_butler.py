@@ -238,28 +238,40 @@ class StickerPrinter:
             qr_img = qr_img.resize((qr_size, qr_size), Image.Resampling.LANCZOS)
             
             # Calculate height
-            text_height = 100
-            sticker_height = qr_size + text_height
+            header_height = 30  # Space for "MUSIC BUTLER" at top
+            text_height = 100   # Space for title/artist below QR code
+            sticker_height = header_height + qr_size + text_height
             
             # Create white background
             sticker = Image.new('1', (sticker_width, sticker_height), 1)
-            
-            # Paste QR code centered
-            x_offset = (sticker_width - qr_size) // 2
-            sticker.paste(qr_img, (x_offset, 0))
             
             # Add text
             draw = ImageDraw.Draw(sticker)
             
             # Try to load fonts
             try:
+                font_header = ImageFont.truetype(
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16)
                 font_title = ImageFont.truetype(
                     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18)
                 font_artist = ImageFont.truetype(
                     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 14)
             except:
+                font_header = ImageFont.load_default()
                 font_title = ImageFont.load_default()
                 font_artist = ImageFont.load_default()
+            
+            # Draw "MUSIC BUTLER" header at top
+            header_text = "MUSIC BUTLER"
+            bbox = draw.textbbox((0, 0), header_text, font=font_header)
+            text_width = bbox[2] - bbox[0]
+            x_pos = (sticker_width - text_width) // 2
+            y_pos = 5
+            draw.text((x_pos, y_pos), header_text, fill=0, font=font_header)
+            
+            # Paste QR code centered (below header)
+            x_offset = (sticker_width - qr_size) // 2
+            sticker.paste(qr_img, (x_offset, header_height))
             
             # Truncate text if too long
             if len(title) > 30:
@@ -267,8 +279,8 @@ class StickerPrinter:
             if len(artist_or_owner) > 35:
                 artist_or_owner = artist_or_owner[:32] + "..."
             
-            # Draw title
-            y_pos = qr_size + 10
+            # Draw title (below QR code)
+            y_pos = header_height + qr_size + 10
             bbox = draw.textbbox((0, 0), title, font=font_title)
             text_width = bbox[2] - bbox[0]
             x_pos = (sticker_width - text_width) // 2
@@ -861,8 +873,8 @@ class MusicButler:
         self.toggle_playback()
     
     def _on_button_double_press(self):
-        """Callback for double button press - print current playlist"""
-        self.print_current_playlist()
+        """Callback for double button press - print current content"""
+        self.print_current_content()
     
     def get_active_device(self):
         """Get the active Spotify device ID"""
@@ -970,18 +982,22 @@ class MusicButler:
         Get information about currently playing content
         
         Returns:
-            dict: Playback information or None if not playing
+            dict: Playback information with context and track info, or None if not playing
         """
         try:
             playback = self.sp.current_playback()
             if playback and playback.get('is_playing'):
                 context = playback.get('context')
-                if context:
-                    return {
-                        'uri': context.get('uri'),
-                        'type': context.get('type'),
-                        'is_playing': True
-                    }
+                item = playback.get('item')  # Current track
+                
+                result = {
+                    'is_playing': True,
+                    'context_uri': context.get('uri') if context else None,
+                    'context_type': context.get('type') if context else None,
+                    'track': item
+                }
+                
+                return result
             return None
         except Exception as e:
             print(f"⚠ Error getting current playback: {e}")
@@ -1023,31 +1039,64 @@ class MusicButler:
             print(f"✗ Error toggling playback: {e}")
             return False
     
-    def print_current_playlist(self):
-        """Print a sticker for the currently playing playlist/album"""
+    def print_current_content(self):
+        """Print a sticker for the currently playing content (playlist/album/track's album)"""
         try:
             # First try to get from current playback
             playback_info = self.get_current_playback()
+            context_source = None
+            uri_to_print = None
             
-            if playback_info and playback_info.get('uri'):
-                uri = playback_info['uri']
-                # Only print if it's a playlist or album (not a track)
-                if uri.startswith(('spotify:playlist:', 'spotify:album:')):
-                    print("🖨 Printing sticker for current playlist/album...")
-                    return self.print_sticker(uri)
+            if playback_info:
+                context_uri = playback_info.get('context_uri')
+                context_type = playback_info.get('context_type')
+                track = playback_info.get('track')
+                
+                # Case 1: Playing from a playlist or album context
+                if context_uri and context_uri.startswith(('spotify:playlist:', 'spotify:album:')):
+                    uri_to_print = context_uri
+                    context_source = f"current {context_type}"
+                    print(f"🖨 Printing sticker for {context_source}: {context_uri}")
+                
+                # Case 2: Playing a track directly (no context) - print the track's album
+                elif track and not context_uri:
+                    album_uri = track.get('album', {}).get('uri')
+                    if album_uri:
+                        uri_to_print = album_uri
+                        context_source = "track's album (no context)"
+                        track_name = track.get('name', 'Unknown Track')
+                        album_name = track.get('album', {}).get('name', 'Unknown Album')
+                        print(f"🖨 Printing sticker for {context_source}")
+                        print(f"   Track: {track_name} → Album: {album_name}")
+                    else:
+                        print("✗ No album information available for current track")
+                        return False
+                
+                # Case 3: Playing from an unsupported context (e.g., artist)
+                elif context_uri:
+                    print(f"✗ Unsupported context type: {context_type}")
+                    print("  Only playlists and albums can be printed")
+                    return False
             
-            # Fall back to last played context
-            if self.current_playback_context:
+            # Fall back to last played context if nothing currently playing
+            if not uri_to_print and self.current_playback_context:
                 if self.current_playback_context.startswith(('spotify:playlist:', 'spotify:album:')):
-                    print("🖨 Printing sticker for last played playlist/album...")
-                    return self.print_sticker(self.current_playback_context)
+                    uri_to_print = self.current_playback_context
+                    context_source = "last played context"
+                    print(f"🖨 Printing sticker for {context_source}: {uri_to_print}")
             
-            print("✗ No playlist or album currently playing")
-            print("  Play a playlist or album first, then double-press the knob")
+            if uri_to_print:
+                success = self.print_sticker(uri_to_print)
+                if success and context_source:
+                    print(f"✓ Printed using {context_source}")
+                return success
+            
+            print("✗ No printable content available")
+            print("  Play a playlist, album, or track first, then press 'r' or double-press the knob")
             return False
             
         except Exception as e:
-            print(f"✗ Error printing current playlist: {e}")
+            print(f"✗ Error printing current content: {e}")
             return False
     
     def print_sticker(self, spotify_uri):
@@ -1144,11 +1193,12 @@ class MusicButler:
         if self.rotary_encoder.enabled:
             print("  • Rotate knob - Adjust volume")
             print("  • Single press - Play/Pause")
-            print("  • Double press - Print sticker for current playlist")
+            print("  • Double press - Print sticker for current content")
         else:
             print("  (Rotary encoder not connected)")
         print("\n⌨️  KEYBOARD CONTROLS:")
-        print("  • 'p' - Toggle between Play/Print mode")
+        print("  • 'm' - Toggle between Play/Print mode")
+        print("  • 'p' - Print QR code sticker for currently playing content")
         print("  • '+' - Increase volume")
         print("  • '-' - Decrease volume")
         print("  • 'q' - Quit application")
@@ -1277,9 +1327,9 @@ class MusicButler:
                 
                 # Show controls
                 if self.rotary_encoder.enabled:
-                    control_text = "Knob: Vol | 1x=Play/Pause | 2x=Print | 'q'=Quit"
+                    control_text = "Knob: Vol | 1x=Play/Pause | 2x=Print | 'p'=Print | 'q'=Quit"
                 else:
-                    control_text = "Press 'p' to switch | 'q' to quit"
+                    control_text = "Press 'm' to switch | 'p' to print | 'q' to quit"
                 cv2.putText(frame, control_text, (10, frame.shape[0] - 20),
                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1)
                 
@@ -1304,13 +1354,21 @@ class MusicButler:
                     print("\n👋 Music Butler signing off...")
                     break
                     
-                elif key == ord('p'):
+                elif key == ord('m'):
+                    # Toggle between Play/Print mode
                     if not self.printer.enabled and not self.print_mode:
                         print("\n⚠ Printer not available - cannot switch to print mode")
                     else:
                         self.print_mode = not self.print_mode
                         mode = "PRINT" if self.print_mode else "PLAY"
                         print(f"\n→ Switched to {mode} mode")
+                
+                elif key == ord('p'):
+                    # Print QR code for currently playing content
+                    if not self.printer.enabled:
+                        print("\n⚠ Printer not available - cannot print")
+                    else:
+                        self.print_current_content()
                         
                 elif key == ord('+') or key == ord('='):
                     self.current_volume = min(100, self.current_volume + 5)
