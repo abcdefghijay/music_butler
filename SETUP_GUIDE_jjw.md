@@ -654,6 +654,54 @@ SPOTIPY_CLIENT_SECRET = 'YOUR_CLIENT_SECRET_HERE'  # Replace with your Client Se
 
 **Important:** The `config.py` file contains your personal credentials and is NOT overwritten when you update `music_butler.py`. This allows you to safely update the main application without losing your settings.
 
+### Preserve Your Config When Updating
+
+**After you've edited `config.py` with your personal credentials, you'll want to preserve those settings when pulling updates from GitHub.**
+
+**Best Solution: Use `git update-index --skip-worktree`**
+
+This tells Git to ignore local changes to `config.py`:
+
+```bash
+# Navigate to your music-butler directory
+cd ~/music_butler  # or ~/music-butler, depending on your directory name
+
+# Tell git to skip tracking changes to config.py
+git update-index --skip-worktree config.py
+
+# Now you can safely pull updates
+git pull origin main  # or master, depending on your branch name
+```
+
+Your local `config.py` will be preserved during updates.
+
+**Note: Restoring config.py to Git tracking**
+
+If you later want to add `config.py` back to the worktree (for example, if you want Git to track changes to it again, or if you're switching to a different configuration method), you can restore it:
+
+```bash
+# Remove the skip-worktree flag
+git update-index --no-skip-worktree config.py
+
+# After this, Git will track changes to config.py again
+# You may need to resolve any conflicts if the file has diverged from the repository
+```
+
+**Alternative: Stash and Reapply**
+
+If you prefer a temporary approach:
+
+```bash
+# Stash your local changes
+git stash push config.py -m "Preserve local config"
+
+# Pull the updates
+git pull origin main
+
+# Reapply your local config
+git stash pop
+```
+
 ### Create Startup Script
 
 ```bash
