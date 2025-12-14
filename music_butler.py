@@ -93,17 +93,43 @@ VOLUME_STEP = 2  # Volume change per encoder step (1-5 recommended)
 class StickerPrinter:
     """Handles QR code sticker printing on thermal printers"""
     
+    @staticmethod
+    def _convert_id_to_int(id_value):
+        """Convert printer ID to integer, handling both string and int formats"""
+        if isinstance(id_value, int):
+            return id_value
+        elif isinstance(id_value, str):
+            # Handle string formats: '0x4c4a', '0x4c4a', '4c4a', etc.
+            id_value = id_value.strip()
+            if id_value.startswith('0x') or id_value.startswith('0X'):
+                return int(id_value, 16)
+            else:
+                # Try as hex first, then decimal
+                try:
+                    return int(id_value, 16)
+                except ValueError:
+                    return int(id_value)
+        else:
+            raise ValueError(f"Invalid printer ID format: {id_value} (type: {type(id_value)})")
+    
     def __init__(self, vendor_id, product_id):
         self.enabled = False
         self.printer = None
-        self.vendor_id = vendor_id
-        self.product_id = product_id
         
         if not ESCPOS_AVAILABLE:
             print("⚠ Printer library not available")
             return
+        
+        # Convert IDs to integers if they're strings
+        try:
+            self.vendor_id = self._convert_id_to_int(vendor_id)
+            self.product_id = self._convert_id_to_int(product_id)
+        except (ValueError, TypeError) as e:
+            print(f"⚠ Invalid printer ID format: {e}")
+            print("  Printer IDs should be integers (e.g., 0x4c4a) or hex strings (e.g., '0x4c4a')")
+            return
             
-        if vendor_id == 0x0000 or product_id == 0x0000:
+        if self.vendor_id == 0x0000 or self.product_id == 0x0000:
             print("⚠ Printer IDs not configured (printing disabled)")
             return
         
@@ -111,12 +137,15 @@ class StickerPrinter:
             # Try multiple profile options for better compatibility
             for profile in ['simple', 'default', 'POS-5890']:
                 try:
-                    self.printer = Usb(vendor_id, product_id, profile=profile)
+                    self.printer = Usb(self.vendor_id, self.product_id, profile=profile)
                     self.enabled = True
                     self.profile = profile
                     print(f"✓ Sticker printer connected (profile: {profile})")
                     break
-                except:
+                except Exception as profile_error:
+                    # Only show error if it's the last profile we're trying
+                    if profile == 'POS-5890':
+                        continue
                     continue
                     
             if not self.enabled:
@@ -226,7 +255,17 @@ class StickerPrinter:
             print(f"✗ Error printing sticker: {error_msg}")
             
             # Provide helpful error messages for common issues
-            if "endpoint" in error_msg.lower() or "0x1" in error_msg or "invalid endpoint" in error_msg.lower():
+            if "device not found" in error_msg.lower() or "not found or cable not plugged" in error_msg.lower():
+                print("  → USB device not found error")
+                print("  → Troubleshooting steps:")
+                print(f"     1. Check if printer is connected: lsusb | grep -i '{hex(self.vendor_id)[2:]}'")
+                print(f"     2. Verify printer IDs in config.py:")
+                print(f"        Current: vendor_id={hex(self.vendor_id)}, product_id={hex(self.product_id)}")
+                print("     3. Unplug and replug the printer USB cable")
+                print("     4. Try a different USB port")
+                print("     5. Check USB device list: lsusb")
+                print("     6. Verify the printer is powered on")
+            elif "endpoint" in error_msg.lower() or "0x1" in error_msg or "invalid endpoint" in error_msg.lower():
                 print("  → USB endpoint error detected")
                 print("  → Troubleshooting steps:")
                 print("     1. Unplug and replug the printer USB cable")
