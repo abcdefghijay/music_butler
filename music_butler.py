@@ -249,6 +249,112 @@ class StickerPrinter:
             print(f"    lsusb -vvv -d {hex(self.vendor_id)}:{hex(self.product_id)} | grep bEndpointAddress")
             print("  Look for lines with 'OUT' and 'IN' to find out_ep and in_ep values")
     
+    def _reconnect_printer(self):
+        """
+        Reconnect the printer by closing and reopening the connection.
+        This ensures any buffered commands are flushed.
+        
+        Returns:
+            bool: True if reconnection successful, False otherwise
+        """
+        if not self.enabled:
+            return False
+        
+        try:
+            # Close existing connection
+            try:
+                if self.printer:
+                    if hasattr(self.printer, 'close'):
+                        self.printer.close()
+                    elif hasattr(self.printer, '_raw') and hasattr(self.printer._raw, 'close'):
+                        self.printer._raw.close()
+            except:
+                pass
+            
+            # Small delay to let USB settle
+            time.sleep(0.1)
+            
+            # Reconnect using the same method as initialization
+            is_jieli_printer = (self.vendor_id == 0x4c4a)
+            
+            if hasattr(self, 'profile') and self.profile:
+                # Reconnect with profile
+                self.printer = Usb(self.vendor_id, self.product_id, profile=self.profile)
+                self._set_media_width(self.printer, 384)
+            elif hasattr(self, 'endpoints') and self.endpoints:
+                # Reconnect with manual endpoints
+                out_ep, in_ep = self.endpoints
+                self.printer = Usb(
+                    self.vendor_id, 
+                    self.product_id, 
+                    interface=0,
+                    in_ep=in_ep,
+                    out_ep=out_ep
+                )
+                self._set_media_width(self.printer, 384)
+            else:
+                # Fallback: try manual endpoints (Jieli default)
+                self.printer = Usb(
+                    self.vendor_id, 
+                    self.product_id, 
+                    interface=0,
+                    in_ep=0x82,
+                    out_ep=0x02
+                )
+                self._set_media_width(self.printer, 384)
+                self.endpoints = (0x02, 0x82)
+            
+            return True
+            
+        except Exception as e:
+            print(f"  ⚠ Warning: Could not reconnect printer: {e}")
+            return False
+    
+    def test_print(self):
+        """
+        Test print - prints a simple test pattern to verify printer is working
+        
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        if not self.enabled:
+            print("✗ Printer not available")
+            return False
+        
+        try:
+            print("🖨 Testing printer with simple text...")
+            
+            # Try a simple text print first
+            self.printer.text("TEST PRINT\n")
+            self.printer.text("If you see this, printer is working!\n")
+            self.printer.text("\n")
+            self.printer.cut()
+            
+            # Flush if available
+            flushed = False
+            try:
+                if hasattr(self.printer, 'flush'):
+                    self.printer.flush()
+                    flushed = True
+                elif hasattr(self.printer, '_raw') and hasattr(self.printer._raw, 'flush'):
+                    self.printer._raw.flush()
+                    flushed = True
+            except:
+                pass
+            
+            # If flush didn't work, try closing/reopening to force buffer flush
+            if not flushed:
+                print("  → Flush not available, reconnecting to flush buffer...")
+                self._reconnect_printer()
+            
+            time.sleep(0.1)
+            print("✓ Test print sent - check if anything printed")
+            return True
+            
+        except Exception as e:
+            print(f"✗ Test print failed: {e}")
+            return False
+    
     def print_qr_sticker(self, spotify_uri, title, artist_or_owner=""):
         """
         Print a QR code sticker with title and artist/owner
@@ -349,9 +455,55 @@ class StickerPrinter:
             # Print the sticker
             # Set media width if not already set (for centering to work)
             self._set_media_width(self.printer, sticker_width)
-            self.printer.image(sticker, center=True)
-            self.printer.text("\n\n")
-            self.printer.cut()
+            
+            # Send image to printer
+            try:
+                self.printer.image(sticker, center=True)
+            except Exception as img_error:
+                print(f"  ✗ Error sending image to printer: {img_error}")
+                raise
+            
+            # Feed some blank lines before cutting
+            try:
+                self.printer.text("\n\n")
+            except Exception as text_error:
+                print(f"  ⚠ Warning: Error sending text: {text_error}")
+            
+            # Cut the paper
+            try:
+                self.printer.cut()
+            except Exception as cut_error:
+                print(f"  ⚠ Warning: Error sending cut command: {cut_error}")
+            
+            # CRITICAL: Flush the printer buffer to ensure commands are sent
+            # python-escpos buffers commands and may not send until connection is closed
+            # Try multiple methods to flush the buffer
+            flushed = False
+            try:
+                # Method 1: Direct flush if available
+                if hasattr(self.printer, 'flush'):
+                    self.printer.flush()
+                    flushed = True
+                # Method 2: Flush the raw USB connection
+                elif hasattr(self.printer, '_raw') and hasattr(self.printer._raw, 'flush'):
+                    self.printer._raw.flush()
+                    flushed = True
+                # Method 3: Try to access the underlying file-like object
+                elif hasattr(self.printer, 'device') and hasattr(self.printer.device, 'flush'):
+                    self.printer.device.flush()
+                    flushed = True
+            except Exception as flush_error:
+                print(f"  ⚠ Warning: Could not flush printer buffer: {flush_error}")
+            
+            # If flush didn't work, reconnect to force buffer flush
+            # This is the most reliable way to ensure commands are sent
+            # python-escpos often buffers commands until connection is closed
+            if not flushed:
+                self._reconnect_printer()
+            
+            # Give printer time to process the commands
+            # Some printers need a small delay before they start printing
+            time.sleep(0.1)
             
             print(f"✓ Sticker printed successfully")
             return True
@@ -418,6 +570,25 @@ class StickerPrinter:
                     self.printer.image(sticker, center=True)
                     self.printer.text("\n\n")
                     self.printer.cut()
+                    
+                    # CRITICAL: Flush the printer buffer to ensure commands are sent
+                    flushed = False
+                    try:
+                        if hasattr(self.printer, 'flush'):
+                            self.printer.flush()
+                            flushed = True
+                        elif hasattr(self.printer, '_raw') and hasattr(self.printer._raw, 'flush'):
+                            self.printer._raw.flush()
+                            flushed = True
+                        elif hasattr(self.printer, 'device') and hasattr(self.printer.device, 'flush'):
+                            self.printer.device.flush()
+                            flushed = True
+                    except Exception as flush_error:
+                        print(f"  ⚠ Warning: Could not flush printer buffer: {flush_error}")
+                    
+                    # Give printer time to process
+                    time.sleep(0.1)
+                    
                     print(f"✓ Sticker printed successfully")
                     return True
                     
@@ -432,9 +603,24 @@ class StickerPrinter:
                     print("     4. Check if printer needs drivers: dmesg | tail -20")
             elif "permission" in error_msg.lower() or "access" in error_msg.lower():
                 print("  → Permission error - try:")
-                print("     1. Add user to printer group: sudo usermod -a -G lp pi")
-                print("     2. Check udev rules for USB device permissions")
-                print("     3. Verify USB device permissions: ls -l /dev/bus/usb/")
+                print("     1. Add user to dialout group: sudo usermod -a -G dialout $USER")
+                print("     2. Add user to printer group: sudo usermod -a -G lp $USER")
+                print("     3. Check udev rules for USB device permissions")
+                print("     4. Verify USB device permissions: ls -l /dev/bus/usb/")
+                print("     5. Log out and back in, or reboot after adding groups")
+            else:
+                # Generic error - provide general troubleshooting
+                print("  → General troubleshooting:")
+                print("     1. Verify printer is connected and powered on")
+                print("     2. Check USB connection: lsusb")
+                print("     3. Try unplugging and replugging the printer")
+                print("     4. Check printer paper/ink levels")
+                print("     5. Try a test print to verify basic functionality")
+                print("\n  → If commands are sent but nothing prints:")
+                print("     • The printer may be buffering - try unplugging/replugging")
+                print("     • Test with: python3 -c \"from music_butler import StickerPrinter; import config; p=StickerPrinter(config.PRINTER_VENDOR_ID, config.PRINTER_PRODUCT_ID); p.test_print()\"")
+                print("     • Check USB permissions: ls -l /dev/bus/usb/")
+                print("     • Verify printer is powered on and has paper")
             
             return False
 
