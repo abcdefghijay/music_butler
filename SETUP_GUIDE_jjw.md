@@ -584,7 +584,7 @@ sudo systemctl restart raspotify
 4. Fill in:
    - App name: `Music Butler`
    - App description: `QR code music player`
-   - Redirect URI: `http://localhost:8888/callback` ⚠️ **EXACT**
+   - Redirect URI: `http://127.0.0.1:8000/callback` ⚠️ **EXACT**
    - Check "Web API"
    - Accept terms
 5. Click **"Save"**
@@ -972,7 +972,7 @@ You'll see a long URL starting with `https://accounts.spotify.com/authorize?...`
 4. **Click "Agree"** to authorize
 5. You'll see "This site can't be reached" - **THIS IS NORMAL**
 6. **Copy the ENTIRE URL from browser address bar**
-   - Starts with: `http://localhost:8888/callback?code=`
+   - Starts with: `http://127.0.0.1:8000/callback?code=`
 7. **Paste back into terminal**
 8. **Press Enter**
 

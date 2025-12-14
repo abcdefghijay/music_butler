@@ -10,7 +10,7 @@
 # Spotify API Credentials (get from https://developer.spotify.com/dashboard)
 SPOTIPY_CLIENT_ID = 'YOUR_CLIENT_ID_HERE'
 SPOTIPY_CLIENT_SECRET = 'YOUR_CLIENT_SECRET_HERE'
-SPOTIPY_REDIRECT_URI = 'http://127.0.0.1:8888/callback'
+SPOTIPY_REDIRECT_URI = 'http://127.0.0.1:8000/callback'
 
 # Printer USB IDs (find with 'lsusb' command after connecting printer)
 # Common Phomemo M02 IDs: 0x0fe6:0x811e or 0x0416:0x5011 or 0x28e9:0x0289
