@@ -171,48 +171,59 @@ class StickerPrinter:
                     (0x03, 0x83),
                 ]
                 
-                for out_ep, in_ep in endpoint_combos:
-                    try:
-                        self.printer = Usb(
-                            self.vendor_id, 
-                            self.product_id, 
-                            interface=0,
-                            in_ep=in_ep,
-                            out_ep=out_ep
-                        )
-                        
-                        # CRITICAL: For USB Composite Devices, we may need to explicitly
-                        # claim the interface and detach kernel driver
+                # For CDC devices (like Jieli Technology), try interface 1 first (data interface)
+                # Interface 0 is usually the communication interface, interface 1 is the data interface
+                interface_numbers = [1, 0] if is_jieli_printer else [0, 1]
+                
+                for interface_num in interface_numbers:
+                    for out_ep, in_ep in endpoint_combos:
                         try:
-                            if hasattr(self.printer, 'device') and hasattr(self.printer.device, 'is_kernel_driver_active'):
-                                # Check if kernel driver is active
-                                for cfg in self.printer.device:
-                                    for intf in cfg:
-                                        if self.printer.device.is_kernel_driver_active(intf.bInterfaceNumber):
-                                            try:
-                                                self.printer.device.detach_kernel_driver(intf.bInterfaceNumber)
-                                                print(f"  → Detached kernel driver from interface {intf.bInterfaceNumber}")
-                                            except:
-                                                pass
-                                        try:
-                                            self.printer.device.set_configuration(cfg)
-                                            self.printer.device.claim_interface(intf.bInterfaceNumber)
-                                            print(f"  → Claimed interface {intf.bInterfaceNumber}")
-                                        except:
-                                            pass
-                        except Exception as intf_error:
-                            # Interface claiming is optional - continue if it fails
-                            pass
-                        
-                        # Set media width for centering (384 pixels for 53mm thermal printer)
-                        self._set_media_width(self.printer, 384)
-                        self.enabled = True
-                        self.profile = None
-                        self.endpoints = (out_ep, in_ep)
-                        print(f"✓ Sticker printer connected (manual endpoints: out=0x{out_ep:02x}, in=0x{in_ep:02x})")
-                        break
-                    except Exception as ep_error:
-                        continue
+                            self.printer = Usb(
+                                self.vendor_id, 
+                                self.product_id, 
+                                interface=interface_num,
+                                in_ep=in_ep,
+                                out_ep=out_ep
+                            )
+                            
+                            # CRITICAL: For USB Composite Devices, we may need to explicitly
+                            # claim the interface and detach kernel driver
+                            try:
+                                if hasattr(self.printer, 'device') and hasattr(self.printer.device, 'is_kernel_driver_active'):
+                                    # Check if kernel driver is active
+                                    for cfg in self.printer.device:
+                                        for intf in cfg:
+                                            if intf.bInterfaceNumber == interface_num:
+                                                if self.printer.device.is_kernel_driver_active(intf.bInterfaceNumber):
+                                                    try:
+                                                        self.printer.device.detach_kernel_driver(intf.bInterfaceNumber)
+                                                        print(f"  → Detached kernel driver from interface {intf.bInterfaceNumber}")
+                                                    except:
+                                                        pass
+                                                try:
+                                                    self.printer.device.set_configuration(cfg)
+                                                    self.printer.device.claim_interface(intf.bInterfaceNumber)
+                                                    print(f"  → Claimed interface {intf.bInterfaceNumber}")
+                                                    self.claimed_interface = intf.bInterfaceNumber
+                                                except:
+                                                    pass
+                            except Exception as intf_error:
+                                # Interface claiming is optional - continue if it fails
+                                pass
+                            
+                            # Set media width for centering (384 pixels for 53mm thermal printer)
+                            self._set_media_width(self.printer, 384)
+                            self.enabled = True
+                            self.profile = None
+                            self.endpoints = (out_ep, in_ep)
+                            self.interface_num = interface_num
+                            print(f"✓ Sticker printer connected (interface={interface_num}, out=0x{out_ep:02x}, in=0x{in_ep:02x})")
+                            break
+                        except Exception as ep_error:
+                            continue
+                    else:
+                        continue  # Continue to next interface if this one didn't work
+                    break  # Break out of interface loop if we succeeded
                 
                 if not self.enabled:
                     raise Exception("Could not connect with any profile or endpoint combination")
@@ -236,6 +247,17 @@ class StickerPrinter:
             return False
         
         try:
+            # CRITICAL: Release interface before closing to avoid "Resource busy" errors
+            try:
+                if self.printer and hasattr(self.printer, 'device'):
+                    if hasattr(self, 'claimed_interface') and self.claimed_interface is not None:
+                        try:
+                            usb.util.release_interface(self.printer.device, self.claimed_interface)
+                        except:
+                            pass
+            except:
+                pass
+            
             # Close existing connection
             try:
                 if self.printer:
@@ -247,7 +269,7 @@ class StickerPrinter:
                 pass
             
             # Small delay to let USB settle
-            time.sleep(0.1)
+            time.sleep(0.2)
             
             # Reconnect using the same method as initialization
             is_jieli_printer = (self.vendor_id == 0x4c4a)
@@ -259,25 +281,84 @@ class StickerPrinter:
             elif hasattr(self, 'endpoints') and self.endpoints:
                 # Reconnect with manual endpoints
                 out_ep, in_ep = self.endpoints
-                self.printer = Usb(
-                    self.vendor_id, 
-                    self.product_id, 
-                    interface=0,
-                    in_ep=in_ep,
-                    out_ep=out_ep
-                )
+                interface_num = getattr(self, 'interface_num', 1 if is_jieli_printer else 0)
+                try:
+                    self.printer = Usb(
+                        self.vendor_id, 
+                        self.product_id, 
+                        interface=interface_num,
+                        in_ep=in_ep,
+                        out_ep=out_ep
+                    )
+                except Exception as usb_error:
+                    # If "Resource busy", try to reset the device first
+                    if "busy" in str(usb_error).lower() or "16" in str(usb_error):
+                        try:
+                            # Try to find and reset the device
+                            if USB_CORE_AVAILABLE:
+                                dev = usb.core.find(idVendor=self.vendor_id, idProduct=self.product_id)
+                                if dev:
+                                    # Release all interfaces
+                                    try:
+                                        cfg = dev.get_active_configuration()
+                                        for intf in cfg:
+                                            try:
+                                                usb.util.release_interface(dev, intf.bInterfaceNumber)
+                                            except:
+                                                pass
+                                    except:
+                                        pass
+                            time.sleep(0.5)  # Wait for USB to settle
+                            # Try again
+                            self.printer = Usb(
+                                self.vendor_id, 
+                                self.product_id, 
+                                interface=interface_num,
+                                in_ep=in_ep,
+                                out_ep=out_ep
+                            )
+                        except:
+                            raise usb_error
+                    else:
+                        raise
                 self._set_media_width(self.printer, 384)
+                # Re-claim interface if needed
+                try:
+                    if hasattr(self.printer, 'device') and hasattr(self.printer.device, 'is_kernel_driver_active'):
+                        cfg = self.printer.device.get_active_configuration()
+                        for intf in cfg:
+                            if intf.bInterfaceNumber == interface_num:
+                                if self.printer.device.is_kernel_driver_active(intf.bInterfaceNumber):
+                                    try:
+                                        self.printer.device.detach_kernel_driver(intf.bInterfaceNumber)
+                                    except:
+                                        pass
+                                try:
+                                    # Only set configuration if not already set
+                                    try:
+                                        self.printer.device.set_configuration(cfg)
+                                    except usb.core.USBError as cfg_error:
+                                        if "busy" not in str(cfg_error).lower() and "16" not in str(cfg_error):
+                                            raise
+                                    self.printer.device.claim_interface(intf.bInterfaceNumber)
+                                    self.claimed_interface = intf.bInterfaceNumber
+                                except:
+                                    pass
+                except:
+                    pass
             else:
                 # Fallback: try manual endpoints (Jieli default)
+                interface_num = 1 if is_jieli_printer else 0
                 self.printer = Usb(
                     self.vendor_id, 
                     self.product_id, 
-                    interface=0,
+                    interface=interface_num,
                     in_ep=0x82,
                     out_ep=0x02
                 )
                 self._set_media_width(self.printer, 384)
                 self.endpoints = (0x02, 0x82)
+                self.interface_num = interface_num
             
             return True
             
@@ -457,33 +538,49 @@ class StickerPrinter:
                             print(f"    ⚠ Configuration error (may be OK): {e}")
                         
                         # Find and claim interface
+                        # For CDC devices (like Jieli Technology), the data interface is usually interface 1
+                        # Interface 0 is the communication interface, interface 1 is the data interface
                         cfg = dev.get_active_configuration()
-                        intf = cfg[(0, 0)]
                         
-                        # Detach kernel driver if needed
-                        try:
-                            if dev.is_kernel_driver_active(intf.bInterfaceNumber):
-                                dev.detach_kernel_driver(intf.bInterfaceNumber)
-                                print(f"    ✓ Detached kernel driver from interface {intf.bInterfaceNumber}")
-                        except:
-                            pass
+                        # Try interface 1 first for CDC devices, then fall back to 0
+                        is_jieli = (self.vendor_id == 0x4c4a)
+                        interface_numbers = [1, 0] if is_jieli else [0, 1]
                         
-                        # Claim interface
-                        try:
-                            usb.util.claim_interface(dev, intf.bInterfaceNumber)
-                            print(f"    ✓ Claimed interface {intf.bInterfaceNumber}")
-                        except Exception as e:
-                            print(f"    ⚠ Interface claim error (may be OK): {e}")
-                        
-                        # Find bulk OUT endpoint (0x02)
+                        intf = None
                         ep_out = None
-                        for ep in intf:
-                            if (ep.bmAttributes & 0x02) == 0x02:  # Bulk transfer
-                                addr = ep.bEndpointAddress
-                                if (addr & 0x80) == 0:  # OUT endpoint
-                                    ep_out = ep
-                                    print(f"    ✓ Found OUT endpoint: 0x{addr:02x}")
+                        
+                        for intf_num in interface_numbers:
+                            try:
+                                intf = cfg[(intf_num, 0)]
+                                
+                                # Detach kernel driver if needed
+                                try:
+                                    if dev.is_kernel_driver_active(intf.bInterfaceNumber):
+                                        dev.detach_kernel_driver(intf.bInterfaceNumber)
+                                        print(f"    ✓ Detached kernel driver from interface {intf.bInterfaceNumber}")
+                                except:
+                                    pass
+                                
+                                # Claim interface
+                                try:
+                                    usb.util.claim_interface(dev, intf.bInterfaceNumber)
+                                    print(f"    ✓ Claimed interface {intf.bInterfaceNumber}")
+                                except Exception as e:
+                                    print(f"    ⚠ Interface claim error (may be OK): {e}")
+                                
+                                # Find bulk OUT endpoint (0x02)
+                                for ep in intf:
+                                    if (ep.bmAttributes & 0x02) == 0x02:  # Bulk transfer
+                                        addr = ep.bEndpointAddress
+                                        if (addr & 0x80) == 0:  # OUT endpoint
+                                            ep_out = ep
+                                            print(f"    ✓ Found OUT endpoint: 0x{addr:02x} on interface {intf.bInterfaceNumber}")
+                                            break
+                                
+                                if ep_out:
                                     break
+                            except (KeyError, IndexError):
+                                continue
                         
                         if ep_out:
                             # Send commands directly
@@ -507,16 +604,23 @@ class StickerPrinter:
                             time.sleep(0.5)
                             
                             # Release interface
-                            try:
-                                usb.util.release_interface(dev, intf.bInterfaceNumber)
-                                print("    ✓ Released interface")
-                            except:
-                                pass
+                            if intf:
+                                try:
+                                    usb.util.release_interface(dev, intf.bInterfaceNumber)
+                                    print("    ✓ Released interface")
+                                except:
+                                    pass
                             
                             print("    → Check if anything printed from direct USB commands")
                             time.sleep(2.0)  # Give printer time
                         else:
                             print("    ✗ Could not find OUT endpoint")
+                            # Release interface if we claimed one but didn't find endpoint
+                            if intf:
+                                try:
+                                    usb.util.release_interface(dev, intf.bInterfaceNumber)
+                                except:
+                                    pass
                 
             except Exception as e:
                 print(f"    ✗ Direct USB method failed: {e}")
@@ -524,6 +628,8 @@ class StickerPrinter:
                 traceback.print_exc()
             
             # Reconnect for method 2
+            # First, make sure any interfaces from Method 1 are fully released
+            time.sleep(0.5)  # Give USB time to settle after Method 1
             self._reconnect_printer()
             time.sleep(0.5)
             
@@ -532,7 +638,18 @@ class StickerPrinter:
             
             # Initialize/wake up printer
             print("    → Initializing printer...")
-            self._initialize_printer()
+            try:
+                self._initialize_printer()
+            except Exception as init_error:
+                # If initialization fails due to resource busy, try reconnecting again
+                if "busy" in str(init_error).lower() or "16" in str(init_error):
+                    print(f"    ⚠ Resource busy, reconnecting...")
+                    time.sleep(1.0)  # Longer delay
+                    self._reconnect_printer()
+                    time.sleep(0.5)
+                    self._initialize_printer()
+                else:
+                    raise
             time.sleep(0.2)
             
             # Try a simple text print first
