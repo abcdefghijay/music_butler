@@ -11,13 +11,16 @@ import os
 import re
 
 # Try to import printer functionality
+_import_error = None
 try:
-    from music_butler import StickerPrinter
+    from hardware.printer import StickerPrinter
     import config
     PRINTER_AVAILABLE = True
-except ImportError:
+except ImportError as e:
     PRINTER_AVAILABLE = False
     StickerPrinter = None
+    # Store error for debugging
+    _import_error = e
 
 # Add your playlists here
 PLAYLISTS = {
@@ -175,7 +178,9 @@ def main():
                 print("  --print flag will be ignored")
         else:
             print("⚠ Printer functionality not available")
-            print("  Make sure music_butler.py and config.py are in the same directory")
+            if _import_error:
+                print(f"  Import error: {_import_error}")
+            print("  Make sure hardware.printer module and config.py are available")
             print("  --print flag will be ignored")
     
     # If URI is provided as positional or keyword argument, handle it directly
