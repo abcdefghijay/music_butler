@@ -1,4 +1,15 @@
 
 .DS_Store
 
-*/__pychache__/
+# Python cache files
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Local config files
+config.py.local
+.spotify_cache
+
+# Generated QR codes (if you want to ignore them)
+# QR_codes/

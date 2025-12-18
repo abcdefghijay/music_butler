@@ -27,8 +27,11 @@ PLAYLISTS = {
     # "Chill Vibes": "spotify:playlist:37i9dQZF1DX4WYpdgoIcn6",
     # "Workout Mix": "spotify:playlist:37i9dQZF1DX76Wlfdnj7AP",
     # "Dinner Party": "spotify:playlist:37i9dQZF1DX4xuWVBs4FgJ",
-    "Vulpeck--The Joy of Music, The Job of Real Estate": "spotify:album:0woDg8EWf32yL9I5bhrGSD",
-    "St. Vincent--St. Vincent": "spotify:album:2FtneRtIF1I5HPBsIxSqf0",
+    # "Vulpeck--The Joy of Music, The Job of Real Estate": "spotify:album:0woDg8EWf32yL9I5bhrGSD",
+    # "St. Vincent--St. Vincent": "spotify:album:2FtneRtIF1I5HPBsIxSqf0",
+    # "A Charlie Brown Christmas": "spotify:album:2XnNY3GEkbWHor5kyvXLu4",
+    # "Kendrick Lamar--GNX": "spotify:album:0hvT3yIEysuuvkK73vgdcW",
+    "Lyle Lovett--Pontiac", "spotify:album:5vUis8FOVDqezxkJke9BOw",
 }
 
 def convert_spotify_url_to_uri(url):
@@ -97,8 +100,31 @@ def create_qr_code(name, uri, output_dir="QR_codes", show=False, print_sticker=F
     print_success = None
     if print_sticker and printer:
         if printer.enabled:
-            title = name if name != extract_title_from_uri(uri) else extract_title_from_uri(uri)
-            print_success = printer.print_qr_sticker(uri, title, "")
+            # Determine title and subtitle based on URI type
+            if uri.startswith("spotify:playlist:"):
+                # For playlists, use the name as title and "(Playlist)" as subtitle
+                # Only use the name if it's a valid name (not empty, not just "Playlist")
+                extracted_type = extract_title_from_uri(uri)
+                if name and name.strip() and name != extracted_type:
+                    title = name
+                    subtitle = "(Playlist)"
+                else:
+                    # Fallback: if no valid name, just show "Playlist" without subtitle
+                    title = "Playlist"
+                    subtitle = ""
+            elif uri.startswith("spotify:album:"):
+                # For albums, use the name as title
+                title = name if name and name != extract_title_from_uri(uri) else "Unknown Album"
+                subtitle = ""
+            elif uri.startswith("spotify:track:"):
+                # For tracks, use the name as title
+                title = name if name and name != extract_title_from_uri(uri) else "Unknown Track"
+                subtitle = ""
+            else:
+                # Fallback for other types
+                title = name if name and name != extract_title_from_uri(uri) else extract_title_from_uri(uri)
+                subtitle = ""
+            print_success = printer.print_qr_sticker(uri, title, subtitle)
             if print_success:
                 print(f"  → Printed sticker for '{name}'")
             else:

@@ -293,7 +293,18 @@ class MusicButler:
         info = self.spotify.get_content_info(spotify_uri)
         
         title = info.get('name', 'Unknown')
-        subtitle = info.get('artist', info.get('owner', ''))
+        
+        # For playlists, show "(Playlist)" as subtitle
+        if spotify_uri.startswith('spotify:playlist:') or info.get('type') == 'playlist':
+            # If name lookup failed but we know it's a playlist, use "Playlist" instead of "Unknown"
+            if title == 'Unknown' and info.get('type') == 'unknown':
+                title = 'Playlist'
+                subtitle = ""  # Don't show redundant "(Playlist)" subtitle if title is just "Playlist"
+            else:
+                subtitle = "(Playlist)"
+        else:
+            # For albums and tracks, use artist
+            subtitle = info.get('artist', info.get('owner', ''))
         
         return self.printer.print_qr_sticker(spotify_uri, title, subtitle)
     
